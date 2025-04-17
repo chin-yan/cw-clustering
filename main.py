@@ -15,13 +15,14 @@ import face_detection
 import feature_extraction
 import clustering
 import visualization
+import face_retrieval  # Import the newly created face retrieval module
 
 tf.disable_v2_behavior()
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Video face clustering system')
     parser.add_argument('--input_video', type=str, 
-                        default=r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4",
+                        default=r"C:\Users\VIPLAB\Desktop\Yan\Drama_Lee'sFamily\Lee's Family Reunion EP233 preview.mp4",
                         help='input video path')
     parser.add_argument('--output_dir', type=str,
                         default=r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result",
@@ -33,12 +34,16 @@ def parse_arguments():
     parser.add_argument('--face_size', type=int, default=160, help='face size')
     parser.add_argument('--cluster_threshold', type=float, default=0.7, help='cluster threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='frames interval')
-    parser.add_argument('--visualize', action='store_true', help='visualize')
+    parser.add_argument('--visualize', action='store_true', default=True, help='visualize')  # Visualization enabled by default
+    parser.add_argument('--do_retrieval', action='store_true', default=True, help='perform face retrieval')  # Face retrieval enabled by default
+    parser.add_argument('--retrieval_frames_interval', type=int, default=15, help='frames interval for retrieval')
+    parser.add_argument('--annoy_trees', type=int, default=10, help='number of trees for Annoy index')
+    parser.add_argument('--retrieval_results', type=int, default=10, help='number of retrieval results per query')
     
     return parser.parse_args()
 
 def create_directories(output_dir):
-    dirs = ['faces', 'clusters', 'centers', 'visualization']
+    dirs = ['faces', 'clusters', 'centers', 'visualization', 'retrieval']
     for dir_name in dirs:
         dir_path = os.path.join(output_dir, dir_name)
         if not os.path.exists(dir_path):
@@ -126,7 +131,8 @@ def main():
                 'cluster_centers': cluster_centers
             }
             
-            with open(os.path.join(dirs['centers'], 'centers_data.pkl'), 'wb') as f:
+            centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
+            with open(centers_data_path, 'wb') as f:
                 pickle.dump(centers_data, f)
             
             if args.visualize:
@@ -135,6 +141,38 @@ def main():
                     clusters, facial_encodings, cluster_centers, 
                     dirs['visualization']
                 )
+    
+    # New: If retrieval mode is enabled, perform face retrieval
+    if args.do_retrieval:
+        print("Step 6: Perform face retrieval using Annoy...")
+        centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
+        
+        retrieval_results = face_retrieval.face_retrieval(
+            video_path=args.input_video,
+            centers_data_path=centers_data_path,
+            output_dir=args.output_dir,
+            model_dir=args.model_dir,
+            frame_interval=args.retrieval_frames_interval,
+            batch_size=args.batch_size,
+            n_trees=args.annoy_trees,
+            n_results=args.retrieval_results
+        )
+        
+        # Save retrieval results
+        retrieval_results_path = os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
+        with open(retrieval_results_path, 'wb') as f:
+            pickle.dump(retrieval_results, f)
+        
+        # Annotate video with face identities
+        print("Step 7: Annotating video with face identities...")
+        import video_annotation
+        output_video = os.path.join(args.output_dir, 'annotated_video.avi')
+        video_annotation.annotate_video(
+            input_video=args.input_video,
+            output_video=output_video,
+            centers_data_path=centers_data_path,
+            model_dir=args.model_dir
+        )
     
     print("Done!")
 
