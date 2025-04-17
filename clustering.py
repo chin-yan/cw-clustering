@@ -1,400 +1,192 @@
-""" Face Cluster """
-import tensorflow.compat.v1 as tf
+# -*- coding: utf-8 -*-
+
 import numpy as np
-import importlib
-import argparse
-import facenet.src.facenet as facenet
-import facenet.src.align.detect_face as detect_face
-import os
-import math
-import matplotlib.pyplot as plt
-import matplotlib
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-import matplotlib.image as mpimg
-
-matplotlib.use('Agg')
-
-tf.disable_v2_behavior()
+import networkx as nx
+from random import shuffle
+from tqdm import tqdm
 
 def face_distance(face_encodings, face_to_compare):
     """
-    Given a list of face encodings, compare them to a known face encoding and get a euclidean distance
-    for each comparison face. The distance tells you how similar the faces are.
-    :param faces: List of face encodings to compare
-    :param face_to_compare: A face encoding to compare against
-    :return: A numpy ndarray with the distance for each face in the same order as the 'faces' array
+        Calculate Euclidean distance/similarity between facial encodings
+
+        Args:
+            face_encodings: face encoding list
+            face_to_compare: face encoding for comparison
+
+        Returns:
+            Similarity score array
     """
-    import numpy as np
     if len(face_encodings) == 0:
         return np.empty((0))
+    
+    # Use cosine similarity (dot product) to calculate similarity
+    return np.sum(face_encodings * face_to_compare, axis=1)
 
-    #return 1/np.linalg.norm(face_encodings - face_to_compare, axis=1)
-    return np.sum(face_encodings*face_to_compare,axis=1)
+def cluster_facial_encodings(facial_encodings, threshold=0.7, iterations=20):
+    """
+        Clustering face encoding using Chinese Whispers algorithm
 
-def load_model(model_dir, meta_file, ckpt_file):
-    model_dir_exp = os.path.expanduser(model_dir)
-    saver = tf.train.import_meta_graph(os.path.join(model_dir_exp, meta_file))
-    saver.restore(tf.get_default_session(), os.path.join(model_dir_exp, ckpt_file))
+        Args:
+            facial_encodings: mapping of face paths to encodings
+            threshold: face matching threshold, default is 0.7
+            iterations: number of iterations
+
+        Returns:
+            Sorted list of clusters
+    """
+    # Prepare data
+    encoding_list = list(facial_encodings.items())
+    if len(encoding_list) <= 1:
+        print("Insufficient number of encodings to cluster")
+        return []
+    
+    print(f"Use the Chinese Whispers algorithm to cluster {len(encoding_list)} faces...")
+    sorted_clusters = _chinese_whispers(encoding_list, threshold, iterations)
+    print(f"Clustering completed, a total of {len(sorted_clusters)} clusters")
+    
+    return sorted_clusters
 
 def _chinese_whispers(encoding_list, threshold=0.7, iterations=20):
-    """ Chinese Whispers Algorithm
-
-    Modified from Alex Loveless' implementation,
-    http://alexloveless.co.uk/data/chinese-whispers-graph-clustering-in-python/
-
-    Inputs:
-        encoding_list: a list of facial encodings from face_recognition
-        threshold: facial match threshold,default 0.6
-        iterations: since chinese whispers is an iterative algorithm, number of times to iterate
-
-    Outputs:
-        sorted_clusters: a list of clusters, a cluster being a list of imagepaths,
-            sorted by largest cluster to smallest
     """
+    Implementation of Chinese Whispers Clustering Algorithm
 
-    #from face_recognition.api import _face_distance
-    from random import shuffle
-    import networkx as nx
+    Args:
+        encoding_list: list of (image path, face encoding) tuples
+        threshold: face matching threshold
+        iterations: number of iterations
+
+    Returns:
+        List of clusters sorted by size
+    """
+    # Prepare data
+    image_paths, encodings = zip(*encoding_list)
+    encodings = np.array(encodings)
+    
     # Create graph
     nodes = []
     edges = []
-
-    image_paths, encodings = zip(*encoding_list)
-
-    if len(encodings) <= 1:
-        print ("No enough encodings to cluster!")
-        return []
-
-    for idx, face_encoding_to_check in enumerate(encodings):
-        # Adding node of facial encoding
-        node_id = idx+1
-
-        # Initialize 'cluster' to unique value (cluster of itself)
+    
+    print("Creating graph...")
+    for idx, face_encoding_to_check in enumerate(tqdm(encodings)):
+        # Add nodes
+        node_id = idx + 1
         node = (node_id, {'cluster': image_paths[idx], 'path': image_paths[idx]})
         nodes.append(node)
-
-        # Facial encodings to compare
-        if (idx+1) >= len(encodings):
-            # Node is last element, don't create edge
+        
+        # If it is the last element, no edge is created
+        if (idx + 1) >= len(encodings):
             break
-
+            
+        # Calculate distance to other encodings
         compare_encodings = encodings[idx+1:]
         distances = face_distance(compare_encodings, face_encoding_to_check)
+        
+        # Add edges
         encoding_edges = []
         for i, distance in enumerate(distances):
             if distance > threshold:
-                # Add edge if facial match
-                edge_id = idx+i+2
+                edge_id = idx + i + 2
                 encoding_edges.append((node_id, edge_id, {'weight': distance}))
-
-        edges = edges + encoding_edges
-
+                
+        edges.extend(encoding_edges)
+    
+    # Create graph
     G = nx.Graph()
     G.add_nodes_from(nodes)
     G.add_edges_from(edges)
-
-    # Iterate
-    for _ in range(0, iterations):
+    
+    # Iterative clustering
+    print(f"Starting Chinese Whispers iteration ({iterations} times)...")
+    for _ in tqdm(range(iterations)):
         cluster_nodes = list(G.nodes)
         shuffle(cluster_nodes)
+        
         for node in cluster_nodes:
             neighbors = G[node]
             clusters = {}
-
+            
+            # Collect clustering information of neighbors
             for ne in neighbors:
                 if isinstance(ne, int):
                     if G.nodes[ne]['cluster'] in clusters:
                         clusters[G.nodes[ne]['cluster']] += G[node][ne]['weight']
                     else:
                         clusters[G.nodes[ne]['cluster']] = G[node][ne]['weight']
-
-            # find the class with the highest edge weight sum
+            
+            # Find the cluster with the highest weight sum
             edge_weight_sum = 0
             max_cluster = 0
             for cluster in clusters:
                 if clusters[cluster] > edge_weight_sum:
                     edge_weight_sum = clusters[cluster]
                     max_cluster = cluster
-
-            # set the class of target node to the winning local class
+            
+            # Set the clustering of the target node
             G.nodes[node]['cluster'] = max_cluster
-
+    
+    # Preparing clustering output
     clusters = {}
-
-    # Prepare cluster output
     for (_, data) in G.nodes.items():
         cluster = data['cluster']
         path = data['path']
-
+        
         if cluster:
             if cluster not in clusters:
                 clusters[cluster] = []
             clusters[cluster].append(path)
-
-    # Sort cluster output
+    
+    # Sort clusters by size
     sorted_clusters = sorted(clusters.values(), key=len, reverse=True)
-    
-    # Prepare node images
-    node_images = {}
-    for node_id, data in G.nodes(data=True):
-        image_path = data['path']
-        img = mpimg.imread(image_path)
-        node_images[node_id] = OffsetImage(img, zoom=0.25)
-    
-    # Plot the graph with node images
-    fig, ax = plt.subplots(figsize=(256, 256))
-    pos = nx.spring_layout(G)
-    nx.draw(G, pos=pos, with_labels=False, node_color='skyblue', node_size=0, ax=ax)
-
-    for node_id, image in node_images.items():
-        ab = AnnotationBbox(image, pos[node_id], frameon=False)
-        ax.add_artist(ab)
-
-    plt.savefig("Lee 5th.png")
-    
-    ###
-    #find cluster center and draw the graph
-    '''cluster_centers = []
-    for cluster in clusters:
-        center = np.mean(encodings, axis=0)
-        cluster_centers.append(center)
-
-    G1 = nx.Graph()
-    # Add nodes for each cluster center
-    for idx, center in enumerate(cluster_centers):
-        G1.add_node(idx, cluster_center=True, pos=center)
-
-    # Add nodes for each image
-    for idx, cluster in enumerate(clusters):
-        for image_path in cluster:
-            G1.add_node(image_path, cluster=idx)
-
-    # Add edges between nodes in the same cluster
-    for cluster in clusters:
-        for i in range(len(cluster)):
-            for j in range(i+1, len(cluster)):
-                G1.add_edge(cluster[i], cluster[j])
-    
-    # Prepare cluster output
-    for (_, data) in G.nodes.items():
-        cluster = data['cluster']
-        path = data['path']
-
-        if cluster:
-            if cluster not in clusters:
-                clusters[cluster] = []
-            clusters[cluster].append(path)
-            
-    # Prepare node images
-    node_images = {}
-    for node_id, data in G.nodes(data=True):
-        image_path = data['path']
-        img = mpimg.imread(image_path)
-        node_images[node_id] = OffsetImage(img, zoom=0.25)
-    
-    # Plot the graph with node images
-    fig, ax = plt.subplots(figsize=(256, 256))
-    pos = nx.spring_layout(G1)
-    nx.draw(G1, pos=pos, with_labels=False, node_color='skyblue', node_size=0, ax=ax)
-
-    for node_id, image in node_images.items():
-        ab = AnnotationBbox(image, pos[node_id], frameon=False)
-        ax.add_artist(ab)
-
-    # Draw cluster centers
-    for node_id, data in G1.nodes(data=True):
-        if 'cluster_center' in data:
-            center = data['pos']
-            plt.scatter(center[0], center[1], c='red', marker='x')
-
-    plt.savefig("cluster_graph_with_chinese_whispers.png")'''
-
     return sorted_clusters
 
-def cluster_facial_encodings(facial_encodings):
-    """ Cluster facial encodings
-
-        Intended to be an optional switch for different clustering algorithms, as of right now
-        only chinese whispers is available.
-
-        Input:
-            facial_encodings: (image_path, facial_encoding) dictionary of facial encodings
-
-        Output:
-            sorted_clusters: a list of clusters, a cluster being a list of imagepaths,
-                sorted by largest cluster to smallest
-
+def find_cluster_centers(clusters, facial_encodings, method='average'):
     """
+        Find the center of each cluster
 
-    if len(facial_encodings) <= 1:
-        print ("Number of facial encodings must be greater than one, can't cluster")
-        return []
+        Args:
+            clusters: list of clusters
+            facial_encodings: face encoding dictionary
+            method: center calculation method, 'average' or 'min_distance'
 
-    # Only use the chinese whispers algorithm for now
-    sorted_clusters = _chinese_whispers(facial_encodings.items())
-    return sorted_clusters
-
-def compute_facial_encodings(sess,images_placeholder,embeddings,phase_train_placeholder,image_size,
-                    embedding_size,nrof_images,nrof_batches,emb_array,batch_size,paths):
-    
-    batch_size=100
-    for i in range(nrof_batches):
-        start_index = i*batch_size
-        print("start_index: ", start_index)
-        end_index = min((i+1)*batch_size, nrof_images)
-        print("end_index: ", end_index)
-        paths_batch = paths[start_index:end_index]
-        #print("paths_batch", paths_batch)
-        images = facenet.load_data(paths_batch, False, False, image_size)
-        feed_dict = { images_placeholder:images, phase_train_placeholder:False }
-        #print("feed_dict: ", feed_dict)
-        emb_array[start_index:end_index,:] = sess.run(embeddings, feed_dict=feed_dict)
-
-    facial_encodings = {}
-    for x in range(nrof_images):
-        facial_encodings[paths[x]] = emb_array[x,:]
-
-
-    return facial_encodings
-
-def get_onedir(paths):
-    dataset = []
-    path_exp = os.path.expanduser(paths)
-    if os.path.isdir(path_exp):
-        images = os.listdir(path_exp)
-        image_paths = [os.path.join(path_exp,img) for img in images]
-
-        for x in image_paths:
-            if os.path.getsize(x)>0:
-                dataset.append(x)
-        
-    return dataset 
-
-def find_cluster_centers(clusters,facial_encodings):
+        Returns:
+            Cluster center list and center image path
+    """
+    print("Compute cluster centers...")
     cluster_centers = []
-    for cluster in clusters:
-        encodings = np.array([facial_encodings[image_path] for image_path in cluster])
-        center = np.mean(encodings, axis=0)
-        cluster_centers.append(center)
+    center_paths = []
+    
+    for cluster in tqdm(clusters):
+        # Get the encoding of all faces in the cluster
+        cluster_encodings = np.array([facial_encodings[path] for path in cluster])
         
-    import networkx as nx
-    import matplotlib.pyplot as plt
-
-    G = nx.Graph()
-
-    # Add nodes for each cluster center
-    for idx, center in enumerate(cluster_centers):
-        G.add_node(idx, cluster_center=True, pos=center)
-
-    # Add nodes for each image
-    for idx, cluster in enumerate(clusters):
-        for image_path in cluster:
-            G.add_node(image_path, cluster=idx)
-
-    # Add edges between nodes in the same cluster
-    for cluster in clusters:
-        for i in range(len(cluster)):
-            for j in range(i+1, len(cluster)):
-                G.add_edge(cluster[i], cluster[j])
+        if method == 'average':
+            # Method 1: Use the mean as the center
+            center = np.mean(cluster_encodings, axis=0)
+            cluster_centers.append(center)
+            
+            # Find the face closest to the center
+            distances = np.sum((cluster_encodings - center) ** 2, axis=1)
+            min_idx = np.argmin(distances)
+            center_paths.append(cluster[min_idx])
+            
+        elif method == 'min_distance':
+            # Method 2: Find the sample with the smallest average distance as the center
+            min_avg_distance = float('inf')
+            center_idx = 0
+            center_encoding = None
+            
+            # Calculate the average distance from each sample to all other samples
+            for i, encoding in enumerate(cluster_encodings):
+                distances = np.sum((cluster_encodings - encoding) ** 2, axis=1)
+                avg_distance = np.mean(distances)
                 
-    # Prepare node images
-    node_images = {}
-    for node_id, data in G.nodes(data=True):
-        image_path = data['path']
-        img = mpimg.imread(image_path)
-        node_images[node_id] = OffsetImage(img, zoom=0.25)
-    
-    # Plot the graph with node images
-    fig, ax = plt.subplots(figsize=(256, 256))
-    pos = nx.spring_layout(G)
-    nx.draw(G, pos=pos, with_labels=False, node_color='skyblue', node_size=0, ax=ax)
-
-    for node_id, image in node_images.items():
-        ab = AnnotationBbox(image, pos[node_id], frameon=False)
-        ax.add_artist(ab)
-
-    # Draw cluster centers
-    for node_id, data in G.nodes(data=True):
-        if 'cluster_center' in data:
-            center = data['pos']
-            plt.scatter(center[0], center[1], c='red', marker='x')
-
-    plt.savefig("cluster_graph_with_chinese_whispers.png")
-    
-    return cluster_centers
-
-
-def main(args):
-    """ Main
-
-    Given a list of images, save out facial encoding data files and copy
-    images into folders of face clusters.
-
-    """
-    from os.path import join, basename, exists
-    from os import makedirs
-    import numpy as np
-    import shutil
-    import sys
-
-    if not exists(args.output):
-        makedirs(args.output)
-
-    with tf.Graph().as_default():
-        with tf.Session() as sess:
-            image_paths = get_onedir(args.input)
-            #image_list, label_list = facenet.get_image_paths_and_labels(train_set)
-
-            meta_file, ckpt_file = facenet.get_model_filenames(os.path.expanduser(args.model_dir))
+                if avg_distance < min_avg_distance:
+                    min_avg_distance = avg_distance
+                    center_idx = i
+                    center_encoding = encoding
             
-            print('Metagraph file: %s' % meta_file)
-            print('Checkpoint file: %s' % ckpt_file)
-            facenet.load_model(args.model_dir)
-            
-            # Get input and output tensors
-            images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
-            embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
-            phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
-            embedding_size = embeddings.get_shape()[1]
-            
-            image_size = images_placeholder.get_shape()[1]
-        
-            # Run forward pass to calculate embeddings
-            print('Runnning forward pass on images') 
-
-            nrof_images = len(image_paths)
-            nrof_batches = int(math.ceil(1.0*nrof_images / args.batch_size))
-            print("nrof_images: ", nrof_images)
-            print("nrof_batches: ", nrof_batches)
-            emb_array = np.zeros((nrof_images, embedding_size))
-            facial_encodings = compute_facial_encodings(sess,images_placeholder,embeddings,phase_train_placeholder,160,
-                embedding_size,nrof_images,nrof_batches,emb_array,args.batch_size,image_paths)
-            sorted_clusters = cluster_facial_encodings(facial_encodings)
-            num_cluster = len(sorted_clusters)
-                
-            # Copy image files to cluster folders
-            for idx, cluster in enumerate(sorted_clusters):
-                cluster_dir = join(args.output, str(idx))
-                if not exists(cluster_dir):
-                    makedirs(cluster_dir)
-                for path in cluster:
-                    shutil.copy(path, join(cluster_dir, basename(path)))
-
-
-def parse_args():
-    """Parse input arguments."""
-    import argparse
-    parser = argparse.ArgumentParser(description='Get a shape mesh (t-pose)')
-    parser.add_argument('--model_dir', type=str, help='model dir', required=True)
-    parser.add_argument('--batch_size', type=int, help='batch size', required=100)
-    parser.add_argument('--input', type=str, help='Input dir of images', required=True)
-    parser.add_argument('--output', type=str, help='Output dir of clusters', required=True)
-    args = parser.parse_args()
-
-    return args
-
-if __name__ == '__main__':
-    """ Entry point """
-    tf.keras.backend.clear_session()
-    main(parse_args())
+            cluster_centers.append(center_encoding)
+            center_paths.append(cluster[center_idx])
     
+    print(f"Completed, total {len(cluster_centers)} centers")
+    return cluster_centers, center_paths
