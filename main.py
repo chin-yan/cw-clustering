@@ -15,10 +15,12 @@ import face_detection
 import feature_extraction
 import clustering
 import visualization
-import face_retrieval  # Import the face retrieval module
-import clustering  # Import the adjusted improved clustering module
-import enhanced_face_preprocessing  # Import the adjusted enhanced face preprocessing
-import speaking_face_annotation  # Import the speaking face annotation module
+import face_retrieval  
+import clustering  
+import enhanced_face_preprocessing  
+import speaking_face_annotation 
+import enhanced_face_retrieval
+import enhanced_video_annotation
 
 tf.disable_v2_behavior()
 
@@ -40,13 +42,19 @@ def parse_arguments():
     parser.add_argument('--visualize', action='store_true', default=True, help='visualize')
     parser.add_argument('--do_retrieval', action='store_true', default=True, help='perform face retrieval')
     parser.add_argument('--retrieval_frames_interval', type=int, default=15, help='frames interval for retrieval')
-    parser.add_argument('--annoy_trees', type=int, default=10, help='number of trees for Annoy index')
+    parser.add_argument('--annoy_trees', type=int, default=15, help='number of trees for Annoy index')
     parser.add_argument('--retrieval_results', type=int, default=10, help='number of retrieval results per query')
     parser.add_argument('--method', type=str, default='hybrid', 
                         choices=['original', 'adjusted', 'hybrid'],
                         help='Method to use: original (old method), adjusted (new method), or hybrid (mix)')
-    parser.add_argument('--temporal_weight', type=float, default=0.15,
+    parser.add_argument('--temporal_weight', type=float, default=0.2,
                         help='weight for temporal continuity in clustering (0-1)')
+    parser.add_argument('--enhanced_retrieval', action='store_true', default=True, 
+                        help='Use enhanced face retrieval')
+    parser.add_argument('--similarity_threshold', type=float, default=0.5, 
+                        help='face similarity threshold')
+    parser.add_argument('--enhanced_annotation', action='store_true', default=True, 
+                        help='Use enhanced video annotation')
     
     return parser.parse_args()
 
@@ -215,35 +223,83 @@ def main():
     
     # If retrieval mode is enabled, perform face retrieval and video annotation
     if args.do_retrieval:
-        print("Step 6: Perform face retrieval using Annoy...")
+        print("Step 6: Performing face retrieval using Annoy...")
         centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
         
-        retrieval_results = face_retrieval.face_retrieval(
-            video_path=args.input_video,
-            centers_data_path=centers_data_path,
-            output_dir=args.output_dir,
-            model_dir=args.model_dir,
-            frame_interval=args.retrieval_frames_interval,
-            batch_size=args.batch_size,
-            n_trees=args.annoy_trees,
-            n_results=args.retrieval_results
-        )
+        if args.enhanced_retrieval:
+            print("Using enhanced face retrieval...")
+            retrieval_results, frame_results = enhanced_face_retrieval.enhanced_face_retrieval(
+                video_path=args.input_video,
+                centers_data_path=centers_data_path,
+                output_dir=args.output_dir,
+                model_dir=args.model_dir,
+                frame_interval=args.retrieval_frames_interval,
+                batch_size=args.batch_size,
+                n_trees=args.annoy_trees,
+                n_results=args.retrieval_results,
+                similarity_threshold=args.similarity_threshold,
+                temporal_weight=args.temporal_weight
+            )
+            
+            # Save Search Results
+            retrieval_results_path = os.path.join(dirs['retrieval'], 'enhanced_retrieval_results.pkl')
+            with open(retrieval_results_path, 'wb') as f:
+                pickle.dump({'by_center': retrieval_results, 'by_frame': frame_results}, f)
+        else:
+            # original results
+            retrieval_results = face_retrieval.face_retrieval(
+                video_path=args.input_video,
+                centers_data_path=centers_data_path,
+                output_dir=args.output_dir,
+                model_dir=args.model_dir,
+                frame_interval=args.retrieval_frames_interval,
+                batch_size=args.batch_size,
+                n_trees=args.annoy_trees,
+                n_results=args.retrieval_results
+            )
+            
+            # Save Search Results
+            retrieval_results_path = os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
+            with open(retrieval_results_path, 'wb') as f:
+                pickle.dump(retrieval_results, f)
         
-        # Save retrieval results
-        retrieval_results_path = os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
-        with open(retrieval_results_path, 'wb') as f:
-            pickle.dump(retrieval_results, f)
-        
-        # Annotate video with speaking face only
-        print("Step 7: Annotating video with speaking face only...")
-        output_video = os.path.join(args.output_dir, 'speaking_face_video.avi')
-        speaking_face_annotation.annotate_video_with_speaking_face(
-            input_video=args.input_video,
-            output_video=output_video,
-            centers_data_path=centers_data_path,
-            model_dir=args.model_dir,
-            detection_interval=2
-        )
+        # Annotate Video
+        print("Step 7: Annotate Video...")
+        if args.enhanced_annotation:
+            print("Using Enhanced Video Annotation...")
+            output_video = os.path.join(args.output_dir, 'enhanced_annotated_video.avi')
+            enhanced_video_annotation.annotate_video_with_enhanced_detection(
+                input_video=args.input_video,
+                output_video=output_video,
+                centers_data_path=centers_data_path,
+                model_dir=args.model_dir,
+                detection_interval=2,
+                similarity_threshold=args.similarity_threshold,
+                temporal_weight=args.temporal_weight
+            )
+            
+            # Try to label speaking faces
+            try:
+                speaking_output_video = os.path.join(args.output_dir, 'enhanced_speaking_face_video.avi')
+                enhanced_video_annotation.annotate_speaking_face_with_enhanced_detection(
+                    input_video=args.input_video,
+                    output_video=speaking_output_video,
+                    centers_data_path=centers_data_path,
+                    model_dir=args.model_dir,
+                    detection_interval=2
+                )
+            except Exception as e:
+                print(f"An error occurred while labeling the speaking face: {e}")
+                print("Make sure you have installed librosa and soundfile for audio processing")
+        else:
+            # Original video annotation
+            output_video = os.path.join(args.output_dir, 'annotated_video.avi')
+            enhanced_video_annotation.annotate_video(
+                input_video=args.input_video,
+                output_video=output_video,
+                centers_data_path=centers_data_path,
+                model_dir=args.model_dir
+            )
     
     print("Done!")
 
