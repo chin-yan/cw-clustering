@@ -15,14 +15,17 @@ import face_detection
 import feature_extraction
 import clustering
 import visualization
-import face_retrieval  # Import the newly created face retrieval module
+import face_retrieval  # Import the face retrieval module
+import clustering  # Import the adjusted improved clustering module
+import enhanced_face_preprocessing  # Import the adjusted enhanced face preprocessing
+import speaking_face_annotation  # Import the speaking face annotation module
 
 tf.disable_v2_behavior()
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Video face clustering system')
+    parser = argparse.ArgumentParser(description='Adjusted video face clustering system')
     parser.add_argument('--input_video', type=str, 
-                        default=r"C:\Users\VIPLAB\Desktop\Yan\Drama_Lee'sFamily\Lee's Family Reunion EP233 preview.mp4",
+                        default=r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4",
                         help='input video path')
     parser.add_argument('--output_dir', type=str,
                         default=r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result",
@@ -32,13 +35,18 @@ def parse_arguments():
                         help='FaceNet model directory')
     parser.add_argument('--batch_size', type=int, default=100, help='batch size')
     parser.add_argument('--face_size', type=int, default=160, help='face size')
-    parser.add_argument('--cluster_threshold', type=float, default=0.7, help='cluster threshold')
+    parser.add_argument('--cluster_threshold', type=float, default=0.65, help='cluster threshold (adjusted)')
     parser.add_argument('--frames_interval', type=int, default=30, help='frames interval')
-    parser.add_argument('--visualize', action='store_true', default=True, help='visualize')  # Visualization enabled by default
-    parser.add_argument('--do_retrieval', action='store_true', default=True, help='perform face retrieval')  # Face retrieval enabled by default
+    parser.add_argument('--visualize', action='store_true', default=True, help='visualize')
+    parser.add_argument('--do_retrieval', action='store_true', default=True, help='perform face retrieval')
     parser.add_argument('--retrieval_frames_interval', type=int, default=15, help='frames interval for retrieval')
     parser.add_argument('--annoy_trees', type=int, default=10, help='number of trees for Annoy index')
     parser.add_argument('--retrieval_results', type=int, default=10, help='number of retrieval results per query')
+    parser.add_argument('--method', type=str, default='hybrid', 
+                        choices=['original', 'adjusted', 'hybrid'],
+                        help='Method to use: original (old method), adjusted (new method), or hybrid (mix)')
+    parser.add_argument('--temporal_weight', type=float, default=0.15,
+                        help='weight for temporal continuity in clustering (0-1)')
     
     return parser.parse_args()
 
@@ -69,20 +77,32 @@ def extract_frames(video_path, output_dir, interval=30):
         frame_count += 1
     
     cap.release()
-    print(f"Capture {len(frames_paths)} frames")
+    print(f"Captured {len(frames_paths)} frames")
     return frames_paths
 
 def main():
     args = parse_arguments()
     dirs = create_directories(args.output_dir)
     frames_paths = extract_frames(args.input_video, dirs['faces'], args.frames_interval)
+    
     with tf.Graph().as_default():
         with tf.Session() as sess:
-            print("Step 1: Use MTCNN to detect faces...")
-            face_paths = face_detection.detect_faces_in_frames(
-                sess, frames_paths, dirs['faces'], 
-                min_face_size=20, face_size=args.face_size
-            )
+            print(f"Running with method: {args.method}")
+            
+            print("Step 1: Detect faces from frames...")
+            if args.method == 'adjusted' or args.method == 'hybrid':
+                print("Using adjusted face detection and preprocessing...")
+                face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
+                    sess, frames_paths, dirs['faces'], 
+                    min_face_size=20, face_size=args.face_size
+                )
+            else:
+                # Original method
+                face_paths = face_detection.detect_faces_in_frames(
+                    sess, frames_paths, dirs['faces'], 
+                    min_face_size=20, face_size=args.face_size
+                )
+                
             print("Step 2: Load the FaceNet model and extract features...")
             model_dir = os.path.expanduser(args.model_dir)
             feature_extraction.load_model(sess, model_dir)
@@ -104,10 +124,53 @@ def main():
                 emb_array, args.batch_size, face_paths
             )
             
-            print("Step 3: Clustering using Chinese Whispers algorithm...")
-            clusters = clustering.cluster_facial_encodings(
-                facial_encodings, threshold=args.cluster_threshold
-            )
+            print("Step 3: Clustering faces...")
+            if args.method == 'adjusted':
+                print("Using adjusted clustering algorithm...")
+                clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, 
+                    threshold=args.cluster_threshold,
+                    iterations=25,
+                    temporal_weight=args.temporal_weight
+                )
+            elif args.method == 'hybrid':
+                # Hybrid method: use both algorithms and take the better result
+                print("Using hybrid clustering approach (running both methods)...")
+                
+                # Run original clustering
+                original_clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, threshold=args.cluster_threshold
+                )
+                
+                # Run adjusted clustering
+                adjusted_clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, 
+                    threshold=args.cluster_threshold,
+                    iterations=25,
+                    temporal_weight=args.temporal_weight
+                )
+                
+                # Compare results and choose the better one
+                # Criteria: more balanced cluster sizes (avoid one giant cluster)
+                original_sizes = [len(c) for c in original_clusters]
+                adjusted_sizes = [len(c) for c in adjusted_clusters]
+                
+                original_std = np.std(original_sizes) / np.mean(original_sizes) if np.mean(original_sizes) > 0 else float('inf')
+                adjusted_std = np.std(adjusted_sizes) / np.mean(adjusted_sizes) if np.mean(adjusted_sizes) > 0 else float('inf')
+                
+                if len(adjusted_clusters) > 0 and (len(original_clusters) == 0 or 
+                                                  (len(adjusted_clusters) >= len(original_clusters) * 0.8 and
+                                                  adjusted_std <= original_std * 1.2)):
+                    print(f"Selected adjusted clustering method: {len(adjusted_clusters)} clusters vs {len(original_clusters)} original")
+                    clusters = adjusted_clusters
+                else:
+                    print(f"Selected original clustering method: {len(original_clusters)} clusters vs {len(adjusted_clusters)} adjusted")
+                    clusters = original_clusters
+            else:
+                # Original method
+                clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, threshold=args.cluster_threshold
+                )
             
             # Save clustering results
             print(f"A total of {len(clusters)} clusters were generated")
@@ -122,7 +185,15 @@ def main():
                     shutil.copy2(face_path, dst_path)
 
             print("Step 4: Calculate the center of each cluster...")
-            cluster_centers = clustering.find_cluster_centers(clusters, facial_encodings)
+            if args.method == 'adjusted':
+                # Use best quality method for better center selection
+                cluster_centers = clustering.find_cluster_centers_adjusted(
+                    clusters, facial_encodings, method='best_quality'
+                )
+            else:
+                cluster_centers = clustering.find_cluster_centers_adjusted(
+                    clusters, facial_encodings
+                )
             
             # Preservation center and related data
             centers_data = {
@@ -142,7 +213,7 @@ def main():
                     dirs['visualization']
                 )
     
-    # New: If retrieval mode is enabled, perform face retrieval
+    # If retrieval mode is enabled, perform face retrieval and video annotation
     if args.do_retrieval:
         print("Step 6: Perform face retrieval using Annoy...")
         centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
@@ -163,15 +234,15 @@ def main():
         with open(retrieval_results_path, 'wb') as f:
             pickle.dump(retrieval_results, f)
         
-        # Annotate video with face identities
-        print("Step 7: Annotating video with face identities...")
-        import video_annotation
-        output_video = os.path.join(args.output_dir, 'annotated_video.avi')
-        video_annotation.annotate_video(
+        # Annotate video with speaking face only
+        print("Step 7: Annotating video with speaking face only...")
+        output_video = os.path.join(args.output_dir, 'speaking_face_video.avi')
+        speaking_face_annotation.annotate_video_with_speaking_face(
             input_video=args.input_video,
             output_video=output_video,
             centers_data_path=centers_data_path,
-            model_dir=args.model_dir
+            model_dir=args.model_dir,
+            detection_interval=2
         )
     
     print("Done!")
