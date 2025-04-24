@@ -21,6 +21,7 @@ import enhanced_face_preprocessing
 import speaking_face_annotation 
 import enhanced_face_retrieval
 import enhanced_video_annotation
+import robust_temporal_consistency
 
 tf.disable_v2_behavior()
 
@@ -37,7 +38,7 @@ def parse_arguments():
                         help='FaceNet model directory')
     parser.add_argument('--batch_size', type=int, default=100, help='batch size')
     parser.add_argument('--face_size', type=int, default=160, help='face size')
-    parser.add_argument('--cluster_threshold', type=float, default=0.65, help='cluster threshold (adjusted)')
+    parser.add_argument('--cluster_threshold', type=float, default=0.55, help='cluster threshold (adjusted)')
     parser.add_argument('--frames_interval', type=int, default=30, help='frames interval')
     parser.add_argument('--visualize', action='store_true', default=True, help='visualize')
     parser.add_argument('--do_retrieval', action='store_true', default=True, help='perform face retrieval')
@@ -47,7 +48,7 @@ def parse_arguments():
     parser.add_argument('--method', type=str, default='hybrid', 
                         choices=['original', 'adjusted', 'hybrid'],
                         help='Method to use: original (old method), adjusted (new method), or hybrid (mix)')
-    parser.add_argument('--temporal_weight', type=float, default=0.2,
+    parser.add_argument('--temporal_weight', type=float, default=0.25,
                         help='weight for temporal continuity in clustering (0-1)')
     parser.add_argument('--enhanced_retrieval', action='store_true', default=True, 
                         help='Use enhanced face retrieval')
@@ -55,6 +56,12 @@ def parse_arguments():
                         help='face similarity threshold')
     parser.add_argument('--enhanced_annotation', action='store_true', default=True, 
                         help='Use enhanced video annotation')
+    parser.add_argument('--temporal_consistency', action='store_true', default=True,
+                        help = 'Use time consistency to enhance face recognition')
+    parser.add_argument('--temporal_window', type=int, default=10,
+                        help='Number of historical frames considered for time consistency')
+    parser.add_argument('--min_votes', type=int, default=3,
+                        help='Minimum number of votes required for temporal consistency')
     
     return parser.parse_args()
 
@@ -193,10 +200,10 @@ def main():
                     shutil.copy2(face_path, dst_path)
 
             print("Step 4: Calculate the center of each cluster...")
-            if args.method == 'adjusted':
+            if args.method == 'adjusted' or args.method == 'hybrid':
                 # Use best quality method for better center selection
                 cluster_centers = clustering.find_cluster_centers_adjusted(
-                    clusters, facial_encodings, method='best_quality'
+                    clusters, facial_encodings, method='min_distance'
                 )
             else:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
@@ -300,7 +307,37 @@ def main():
                 centers_data_path=centers_data_path,
                 model_dir=args.model_dir
             )
-    
+    if args.do_retrieval and args.temporal_consistency:
+        print("Step 8: Apply time consistency enhancement...")
+
+        # Get the original annotation result file path
+        if args.enhanced_annotation:
+            original_video = os.path.join(args.output_dir, 'enhanced_annotated_video.avi')
+            detection_results_path = os.path.join(dirs['retrieval'], 'enhanced_detection_results.pkl')
+        else:
+            original_video = os.path.join(args.output_dir, 'annotated_video.avi')
+            detection_results_path = os.path.join(dirs['retrieval'], 'detection_results.pkl')
+
+        # Confirm that the annotation result file exists
+        if os.path.exists(detection_results_path):
+            # Apply time consistency enhancement
+            temporal_enhanced_video = os.path.join(args.output_dir, 'temporal_enhanced_video.avi')
+
+            # Calling time consistency enhancement function
+            robust_temporal_consistency.enhance_video_temporal_consistency(
+            input_video=args.input_video,
+            annotation_file=detection_results_path,
+            output_video=temporal_enhanced_video,
+            centers_data_path=centers_data_path,
+            temporal_window=args.temporal_window,
+            confidence_threshold=args.similarity_threshold,
+            min_votes = args.min_votes
+            )
+
+            print(f"The temporal consistency enhanced video has been saved to: {temporal_enhanced_video}")
+        else:
+            print(f"Warning: Labeled result file {detection_results_path} not found, unable to apply temporal consistency enhancement")
+            
     print("Done!")
 
 if __name__ == "__main__":

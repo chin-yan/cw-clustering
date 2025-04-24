@@ -273,6 +273,11 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
         similarity_threshold: Minimum similarity threshold for matching
         temporal_weight: Weight for temporal consistency
     """
+    # Store the detection results of each frame
+    frame_detection_results = {}
+
+    # Add after processing each frame
+    frame_detection_results[frame_count] = faces
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
     
@@ -437,6 +442,13 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
     
     print(f"Video annotation completed. Output saved to {output_video}")
     print(f"Tracking data saved to {tracking_data_path}")
+    
+    # Save the test results for later processing
+    detection_results_path = os.path.join(os.path.dirname(output_video), 'enhanced_detection_results.pkl')
+    with open(detection_results_path, 'wb') as f:
+        pickle.dump(frame_detection_results, f)
+
+    print(f"The detection results have been saved to {detection_results_path}")
 
 def annotate_speaking_face_with_enhanced_detection(input_video, output_video, centers_data_path, model_dir,
                                                 detection_interval=2, silence_threshold=500, audio_window=10):
