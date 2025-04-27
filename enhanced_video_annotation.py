@@ -276,8 +276,6 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
     # Store the detection results of each frame
     frame_detection_results = {}
 
-    # Add after processing each frame
-    frame_detection_results[frame_count] = faces
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
     
@@ -361,6 +359,9 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                     
                     # Update cache
                     cached_faces = faces
+                    
+                    # Add after processing each frame
+                    frame_detection_results[frame_count] = faces
                 else:
                     # Use cached faces with adjusted bounding boxes (simple tracking)
                     # In real applications, a proper tracking algorithm would be used
@@ -724,9 +725,8 @@ if __name__ == "__main__":
             model_dir=model_dir,
             detection_interval=2,
             silence_threshold=500,
-            audio_window=10
-        )
+            audio_window=10)  
+        
     except Exception as e:
         print(f"Error in speaking face detection: {e}")
         print("Make sure librosa and soundfile are installed for audio processing")
-        print("pip install librosa soundfile")
