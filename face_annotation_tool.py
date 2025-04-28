@@ -25,20 +25,28 @@ def extract_frame_info(image_path):
         frame_num = int(match.group(1))
         face_idx = int(match.group(2))
         return frame_num, face_idx
-    else:
-        # If the format doesn't match, return defaults
-        return -1, -1
+    
+    # Also try to match sideface pattern
+    match = re.match(r'frame_(\d+)_sideface_(\d+)\.jpg', basename)
+    if match:
+        frame_num = int(match.group(1))
+        face_idx = int(match.group(2))
+        return frame_num, face_idx
+    
+    # If the format doesn't match, return defaults
+    return -1, -1
 
-def create_face_annotation_template(faces_dir, output_json_path):
+def create_face_annotation_template(faces_dir, frames_dir, output_json_path):
     """
     Create annotation template using only individual face images
     
     Args:
         faces_dir: Directory containing extracted face images
+        frames_dir: Directory containing frame images
         output_json_path: Path to save the annotation template
     """
     # Get all face files
-    face_files = [f for f in os.listdir(faces_dir) if f.endswith(".jpg") and "face_" in f]
+    face_files = [f for f in os.listdir(faces_dir) if f.endswith(".jpg") and ("face_" in f or "sideface_" in f)]
     face_files.sort()  # Sort by name
     
     print(f"Found {len(face_files)} face images in {faces_dir}")
@@ -213,10 +221,11 @@ class FaceIDAssigner:
 if __name__ == "__main__":
     # Directory containing face images (single faces)
     faces_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\faces"
+    frames_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\frames"
     
     # Create annotation template
     template_path = "single_face_template.json"
-    create_face_annotation_template(faces_dir, template_path)
+    create_face_annotation_template(faces_dir, frames_dir, template_path)
     
     # Start manual ID assignment
     id_assigner = FaceIDAssigner(template_path)

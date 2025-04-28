@@ -68,6 +68,12 @@ class FaceIDAssigner:
                 cv2.putText(display_img, face_label, 
                            (bbox[0], bbox[1] - 5), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # If the face image exists, display a checkmark
+                if "face_exists" in face and face["face_exists"]:
+                    cv2.putText(display_img, "?", 
+                               (bbox[0] + bbox[2] - 20, bbox[1] + 20), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             # Set up window
             window_name = f"Frame {frame_info['frame_id']} - Assign IDs"
@@ -130,6 +136,12 @@ class FaceIDAssigner:
                                 cv2.putText(display_img, face_label, 
                                            (bbox[0], bbox[1] - 5), 
                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                                
+                                # If the face image exists, display a checkmark
+                                if "face_exists" in face and face["face_exists"]:
+                                    cv2.putText(display_img, "?", 
+                                               (bbox[0] + bbox[2] - 20, bbox[1] + 20), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                             
                             cv2.imshow(window_name, display_img)
                             
@@ -167,6 +179,29 @@ class FaceIDAssigner:
         output_path = "ground_truth.json"
         with open(output_path, 'w') as f:
             json.dump(self.annotation_data, f, indent=2)
+        
+        # Also save a single_face_format for the face annotation tool
+        # This converts the frame-based annotation to face-based annotation
+        single_face_data = {
+            "video_name": self.annotation_data["video_name"],
+            "faces": []
+        }
+        
+        for frame in self.annotation_data["frames"]:
+            frame_id = frame["frame_id"]
+            for i, face in enumerate(frame["faces"]):
+                if "face_exists" in face and face["face_exists"] and "face_path" in face and face["face_path"]:
+                    single_face_data["faces"].append({
+                        "face_path": face["face_path"],
+                        "frame_id": frame_id,
+                        "face_idx": i,
+                        "face_id": face["face_id"],
+                        "person_name": face["person_name"]
+                    })
+        
+        # Save single face format
+        with open("single_face_ground_truth.json", 'w') as f:
+            json.dump(single_face_data, f, indent=2)
 
 if __name__ == "__main__":
     template_path = "ground_truth_template.json"

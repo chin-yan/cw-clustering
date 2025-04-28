@@ -7,14 +7,15 @@ import tensorflow as tf
 from tqdm import tqdm
 import facenet.src.align.detect_face as detect_face
 
-def detect_faces_in_frames(sess, frame_paths, output_dir, min_face_size=20, face_size=160):
+def detect_faces_in_frames(sess, frame_paths, faces_output_dir, frames_output_dir, min_face_size=20, face_size=160):
     """
-    Detecting faces from frames using MTCNN
+    Detecting faces from frames using MTCNN, separating frames and faces
 
     Args:
     sess: TensorFlow session
     frame_paths: frame path list
-    output_dir: The directory where the detected faces are saved
+    faces_output_dir: The directory where the detected faces are saved
+    frames_output_dir: The directory where frames are saved
     min_face_size: minimum face size
     face_size: The size of the output face image
 
@@ -24,6 +25,12 @@ def detect_faces_in_frames(sess, frame_paths, output_dir, min_face_size=20, face
     print("Creating MTCNN network...")
     pnet, rnet, onet = create_mtcnn(sess, None)
     
+    # Create output directories if they don't exist
+    if not os.path.exists(faces_output_dir):
+        os.makedirs(faces_output_dir)
+    if not os.path.exists(frames_output_dir):
+        os.makedirs(frames_output_dir)
+    
     face_paths = []
     face_count = 0
     
@@ -32,6 +39,13 @@ def detect_faces_in_frames(sess, frame_paths, output_dir, min_face_size=20, face
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
+            
+        # Get the base name of the frame
+        frame_name = os.path.basename(frame_path)
+        
+        # Copy the frame to frames_output_dir
+        frame_out_path = os.path.join(frames_output_dir, frame_name)
+        cv2.imwrite(frame_out_path, frame)
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         bounding_boxes, _ = detect_face.detect_face(
@@ -56,9 +70,8 @@ def detect_faces_in_frames(sess, frame_paths, output_dir, min_face_size=20, face
             face_resized = cv2.resize(face, (face_size, face_size))
             
             # Generate output path
-            frame_name = os.path.basename(frame_path)
             face_name = f"{os.path.splitext(frame_name)[0]}_face_{i}.jpg"
-            face_path = os.path.join(output_dir, face_name)
+            face_path = os.path.join(faces_output_dir, face_name)
             
             # Save face
             cv2.imwrite(face_path, face_resized)

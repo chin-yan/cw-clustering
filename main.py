@@ -70,7 +70,7 @@ def parse_arguments():
     return parser.parse_args()
 
 def create_directories(output_dir):
-    dirs = ['faces', 'clusters', 'centers', 'visualization', 'retrieval', 'evaluation']
+    dirs = ['faces', 'frames', 'clusters', 'centers', 'visualization', 'retrieval', 'evaluation']
     for dir_name in dirs:
         dir_path = os.path.join(output_dir, dir_name)
         if not os.path.exists(dir_path):
@@ -78,7 +78,22 @@ def create_directories(output_dir):
     return {name: os.path.join(output_dir, name) for name in dirs}
 
 def extract_frames(video_path, output_dir, interval=30):
+    """
+    Extract frames from video and save them to a temporary directory
+    
+    Args:
+        video_path: Input video path
+        output_dir: Temporary output directory
+        interval: Frame interval
+        
+    Returns:
+        Path list of extracted frames and temporary directory path
+    """
     print("Capturing frames from video...")
+    temp_dir = os.path.join(output_dir, "temp_frames")
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+    
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     frames_paths = []
@@ -89,7 +104,7 @@ def extract_frames(video_path, output_dir, interval=30):
             break
         
         if frame_count % interval == 0:
-            frame_path = os.path.join(output_dir, f"frame_{frame_count:06d}.jpg")
+            frame_path = os.path.join(temp_dir, f"frame_{frame_count:06d}.jpg")
             cv2.imwrite(frame_path, frame)
             frames_paths.append(frame_path)
         
@@ -97,7 +112,7 @@ def extract_frames(video_path, output_dir, interval=30):
     
     cap.release()
     print(f"Captured {len(frames_paths)} frames")
-    return frames_paths
+    return frames_paths, temp_dir
 
 def evaluate_retrieval_performance(retrieval_results, center_paths, ground_truth_path):
     """
@@ -226,7 +241,7 @@ def visualize_evaluation_metrics(metrics, output_path):
 def main():
     args = parse_arguments()
     dirs = create_directories(args.output_dir)
-    frames_paths = extract_frames(args.input_video, dirs['faces'], args.frames_interval)
+    frames_paths, temp_frames_dir = extract_frames(args.input_video, args.output_dir, args.frames_interval)
     
     with tf.Graph().as_default():
         with tf.Session() as sess:
@@ -236,15 +251,19 @@ def main():
             if args.method == 'adjusted' or args.method == 'hybrid':
                 print("Using adjusted face detection and preprocessing...")
                 face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
-                    sess, frames_paths, dirs['faces'], 
+                    sess, frames_paths, dirs['faces'], dirs['frames'], 
                     min_face_size=20, face_size=args.face_size
                 )
             else:
                 # Original method
                 face_paths = face_detection.detect_faces_in_frames(
-                    sess, frames_paths, dirs['faces'], 
+                    sess, frames_paths, dirs['faces'], dirs['frames'],
                     min_face_size=20, face_size=args.face_size
                 )
+                
+            # Clean up temporary frames directory
+            if os.path.exists(temp_frames_dir):
+                shutil.rmtree(temp_frames_dir)
                 
             print("Step 2: Load the FaceNet model and extract features...")
             model_dir = os.path.expanduser(args.model_dir)
@@ -482,7 +501,7 @@ def main():
         # Get the original annotation result file path
         if args.enhanced_annotation:
             original_video = os.path.join(args.output_dir, 'enhanced_annotated_video.avi')
-            detection_results_path = os.path.join(dirs['result'], 'enhanced_detection_results.pkl')
+            detection_results_path = os.path.join(args.output_dir, 'enhanced_detection_results.pkl')
         else:
             original_video = os.path.join(args.output_dir, 'annotated_video.avi')
             detection_results_path = os.path.join(dirs['retrieval'], 'detection_results.pkl')

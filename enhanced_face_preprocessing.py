@@ -8,7 +8,7 @@ from tqdm import tqdm
 import math
 import facenet.src.align.detect_face as detect_face
 
-def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_size=160,
+def detect_faces_adjusted(sess, frame_paths, faces_output_dir, frames_output_dir, min_face_size=20, face_size=160,
                          margin=44, detect_multiple_faces=True):
     """
     Adjusted face detection and preprocessing with more conservative enhancement
@@ -17,7 +17,8 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_
     Args:
         sess: TensorFlow session
         frame_paths: frame path list
-        output_dir: The directory where the detected faces are saved
+        faces_output_dir: The directory where the detected faces are saved
+        frames_output_dir: The directory where frames are saved
         min_face_size: minimum face size
         face_size: The size of the output face image
         margin: Margin for the crop around the bounding box (in pixels)
@@ -28,6 +29,12 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_
     """
     print("Creating MTCNN network for adjusted face detection...")
     pnet, rnet, onet = create_mtcnn(sess, None)
+    
+    # Create output directories if they don't exist
+    if not os.path.exists(faces_output_dir):
+        os.makedirs(faces_output_dir)
+    if not os.path.exists(frames_output_dir):
+        os.makedirs(frames_output_dir)
     
     # Parameters for better side face detection - less aggressive than before
     threshold = [0.6, 0.7, 0.8]  # Default is [0.6, 0.7, 0.7] - minor adjustment
@@ -40,6 +47,13 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
+
+        # Get the base name of the frame
+        frame_name = os.path.basename(frame_path)
+        
+        # Copy the frame to frames_output_dir
+        frame_out_path = os.path.join(frames_output_dir, frame_name)
+        cv2.imwrite(frame_out_path, frame)
 
         # Keep a copy of the original frame for face extraction
         original_frame = frame.copy()
@@ -82,9 +96,8 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_
             face_resized = cv2.resize(face, (face_size, face_size))
             
             # Generate output path
-            frame_name = os.path.basename(frame_path)
             face_name = f"{os.path.splitext(frame_name)[0]}_face_{i}.jpg"
-            face_path = os.path.join(output_dir, face_name)
+            face_path = os.path.join(faces_output_dir, face_name)
             
             # Save face
             cv2.imwrite(face_path, face_resized)
@@ -127,9 +140,8 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_
                 face_resized = cv2.resize(face, (face_size, face_size))
                 
                 # Generate output path
-                frame_name = os.path.basename(frame_path)
                 face_name = f"{os.path.splitext(frame_name)[0]}_sideface_{i}.jpg"
-                face_path = os.path.join(output_dir, face_name)
+                face_path = os.path.join(faces_output_dir, face_name)
                 
                 # Save face
                 cv2.imwrite(face_path, face_resized)

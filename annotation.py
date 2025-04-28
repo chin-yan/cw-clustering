@@ -6,12 +6,13 @@ import json
 from tqdm import tqdm
 import facenet.src.align.detect_face as detect_face
 
-def create_annotation_template(frames_dir, output_json_path):
+def create_annotation_template(frames_dir, faces_dir, output_json_path):
     """
     Create annotation template using existing frames and MTCNN
     
     Args:
         frames_dir: Directory containing extracted frames
+        faces_dir: Directory containing extracted faces
         output_json_path: Path to save the annotation template
     """
     # Get all frame files
@@ -64,11 +65,20 @@ def create_annotation_template(frames_dir, output_json_path):
                 width = int(x2 - x1)
                 height = int(y2 - y1)
                 
+                # Construct the expected face filename
+                face_filename = f"frame_{frame_id:06d}_face_{i}.jpg"
+                face_path = os.path.join(faces_dir, face_filename)
+                
+                # Verify if the face file exists
+                face_exists = os.path.exists(face_path)
+                
                 # Assign a temporary face_id (-1)
                 faces.append({
                     "face_id": -1,  # To be assigned manually
                     "bbox": [x1, y1, width, height],
-                    "person_name": ""
+                    "person_name": "",
+                    "face_path": face_path if face_exists else "",
+                    "face_exists": face_exists
                 })
             
             # Add frame to annotations
@@ -87,11 +97,14 @@ def create_annotation_template(frames_dir, output_json_path):
     
     # Count total faces
     total_faces = sum(len(frame["faces"]) for frame in annotation_data["frames"])
+    faces_found = sum(sum(1 for face in frame["faces"] if face["face_exists"]) for frame in annotation_data["frames"])
     print(f"Total detected faces: {total_faces}")
+    print(f"Faces found in faces directory: {faces_found}")
 
 if __name__ == "__main__":
     # Change these paths to match your project structure
-    frames_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\faces"  # Directory containing the extracted frames
+    frames_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\frames"  # Directory containing the frames
+    faces_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\faces"  # Directory containing the extracted faces
     output_json_path = "ground_truth_template.json"
     
-    create_annotation_template(frames_dir, output_json_path)
+    create_annotation_template(frames_dir, faces_dir, output_json_path)

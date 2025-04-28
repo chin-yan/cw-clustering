@@ -109,7 +109,7 @@ def extract_frames_and_faces(video_path, output_dir, sess, interval=5):
     # Use enhanced face detection for better coverage
     print("Using enhanced MTCNN to detect faces...")
     face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
-        sess, frames_paths, faces_dir,
+        sess, frames_paths, faces_dir, frames_dir,  # ²K¥[frames_dir§@?frames_output_dir??
         min_face_size=20, face_size=160
     )
     
