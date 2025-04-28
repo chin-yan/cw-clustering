@@ -482,7 +482,7 @@ def main():
         # Get the original annotation result file path
         if args.enhanced_annotation:
             original_video = os.path.join(args.output_dir, 'enhanced_annotated_video.avi')
-            detection_results_path = os.path.join(dirs['retrieval'], 'enhanced_detection_results.pkl')
+            detection_results_path = os.path.join(dirs['result'], 'enhanced_detection_results.pkl')
         else:
             original_video = os.path.join(args.output_dir, 'annotated_video.avi')
             detection_results_path = os.path.join(dirs['retrieval'], 'detection_results.pkl')
