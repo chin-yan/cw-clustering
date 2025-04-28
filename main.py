@@ -10,6 +10,8 @@ from tqdm import tqdm
 import pickle
 import matplotlib.pyplot as plt
 import shutil
+import json
+import sys
 
 import face_detection
 import feature_extraction
@@ -62,11 +64,13 @@ def parse_arguments():
                         help='Number of historical frames considered for time consistency')
     parser.add_argument('--min_votes', type=int, default=3,
                         help='Minimum number of votes required for temporal consistency')
+    parser.add_argument('--evaluate', action='store_true', default=True,
+                        help='Evaluate retrieval performance using ground truth')
     
     return parser.parse_args()
 
 def create_directories(output_dir):
-    dirs = ['faces', 'clusters', 'centers', 'visualization', 'retrieval']
+    dirs = ['faces', 'clusters', 'centers', 'visualization', 'retrieval', 'evaluation']
     for dir_name in dirs:
         dir_path = os.path.join(output_dir, dir_name)
         if not os.path.exists(dir_path):
@@ -94,6 +98,130 @@ def extract_frames(video_path, output_dir, interval=30):
     cap.release()
     print(f"Captured {len(frames_paths)} frames")
     return frames_paths
+
+def evaluate_retrieval_performance(retrieval_results, center_paths, ground_truth_path):
+    """
+    Evaluate face retrieval performance against ground truth
+    
+    Args:
+        retrieval_results: Dictionary of retrieval results
+        center_paths: Paths to center face images
+        ground_truth_path: Path to ground truth JSON file
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    if not os.path.exists(ground_truth_path):
+        print(f"Ground truth file {ground_truth_path} not found. Skipping evaluation.")
+        return None
+    
+    print("Evaluating retrieval performance...")
+    
+    # Initialize metrics
+    total_faces = 0
+    correct_retrievals = 0
+    rank1_correct = 0
+    
+    # Load ground truth
+    with open(ground_truth_path, 'r') as f:
+        ground_truth = json.load(f)
+    
+    # Create mapping from face path to face_id
+    face_path_to_id = {}
+    for face in ground_truth["faces"]:
+        face_path_to_id[os.path.basename(face["face_path"])] = face["face_id"]
+    
+    # Evaluate center by center
+    for center_idx, center_path in enumerate(center_paths):
+        if center_idx not in retrieval_results:
+            continue
+        
+        # Get center's ground truth ID if available
+        center_gt_id = -1
+        center_basename = os.path.basename(center_path)
+        if center_basename in face_path_to_id:
+            center_gt_id = face_path_to_id[center_basename]
+        else:
+            # Try to find by matching any part of the path
+            for face_path, gt_id in face_path_to_id.items():
+                if face_path in center_path or center_path in face_path:
+                    center_gt_id = gt_id
+                    break
+        
+        if center_gt_id == -1:
+            # Skip centers that aren't in ground truth
+            continue
+            
+        # Evaluate retrieved faces for this center
+        retrieved_faces = retrieval_results[center_idx]
+        for rank, face_info in enumerate(retrieved_faces):
+            face_path = face_info["path"]
+            face_basename = os.path.basename(face_path)
+            
+            # Get ground truth ID for this face
+            if face_basename in face_path_to_id:
+                total_faces += 1
+                true_id = face_path_to_id[face_basename]
+                
+                if true_id == center_gt_id:
+                    correct_retrievals += 1
+                    if rank == 0:  # Rank 1 (first result)
+                        rank1_correct += 1
+    
+    # Calculate metrics
+    retrieval_accuracy = correct_retrievals / total_faces if total_faces > 0 else 0
+    rank1_accuracy = rank1_correct / total_faces if total_faces > 0 else 0
+    
+    metrics = {
+        "retrieval_accuracy": retrieval_accuracy,
+        "rank1_accuracy": rank1_accuracy,
+        "correct_retrievals": correct_retrievals,
+        "total_faces": total_faces
+    }
+    
+    # Print metrics
+    print("\nRetrieval Performance Metrics:")
+    print(f"Overall Retrieval Accuracy: {retrieval_accuracy:.4f}")
+    print(f"Rank-1 Accuracy: {rank1_accuracy:.4f}")
+    print(f"Correct Retrievals: {correct_retrievals}")
+    print(f"Total Evaluated Faces: {total_faces}")
+    
+    return metrics
+
+def visualize_evaluation_metrics(metrics, output_path):
+    """
+    Visualize evaluation metrics with a simple bar chart
+    
+    Args:
+        metrics: Dictionary with evaluation metrics
+        output_path: Path to save the visualization
+    """
+    # Create a bar chart
+    plt.figure(figsize=(10, 6))
+    
+    # Extract metrics to plot
+    labels = ['Retrieval Accuracy', 'Rank-1 Accuracy']
+    values = [metrics['retrieval_accuracy'], metrics['rank1_accuracy']]
+    
+    # Create the bar chart
+    bars = plt.bar(labels, values)
+    
+    # Add values on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.02,
+                 f'{height:.4f}', ha='center', va='bottom')
+    
+    # Set chart parameters
+    plt.ylim(0, 1.1)
+    plt.title('Retrieval Performance Metrics')
+    plt.ylabel('Score')
+    plt.grid(axis='y', alpha=0.3)
+    
+    # Save the chart
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
 
 def main():
     args = parse_arguments()
@@ -210,6 +338,9 @@ def main():
                     clusters, facial_encodings
                 )
             
+            # Extract center_paths for later use
+            centers, center_paths = cluster_centers
+            
             # Preservation center and related data
             centers_data = {
                 'clusters': clusters,
@@ -252,6 +383,25 @@ def main():
             retrieval_results_path = os.path.join(dirs['retrieval'], 'enhanced_retrieval_results.pkl')
             with open(retrieval_results_path, 'wb') as f:
                 pickle.dump({'by_center': retrieval_results, 'by_frame': frame_results}, f)
+                
+            # Evaluate retrieval performance if requested
+            if args.evaluate and os.path.exists("ground_truth.json"):
+                try:
+                    eval_metrics = evaluate_retrieval_performance(retrieval_results, center_paths, "ground_truth.json")
+                    if eval_metrics:
+                        # Save evaluation metrics
+                        eval_metrics_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.json')
+                        with open(eval_metrics_path, 'w') as f:
+                            json.dump(eval_metrics, f, indent=2)
+                        
+                        # Visualize evaluation metrics
+                        eval_chart_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.png')
+                        visualize_evaluation_metrics(eval_metrics, eval_chart_path)
+                        
+                        print(f"Evaluation metrics saved to {eval_metrics_path}")
+                        print(f"Evaluation chart saved to {eval_chart_path}")
+                except Exception as e:
+                    print(f"Error evaluating retrieval performance: {e}")
         else:
             # original results
             retrieval_results = face_retrieval.face_retrieval(
@@ -269,6 +419,25 @@ def main():
             retrieval_results_path = os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
             with open(retrieval_results_path, 'wb') as f:
                 pickle.dump(retrieval_results, f)
+                
+            # Evaluate retrieval performance if requested
+            if args.evaluate and os.path.exists("ground_truth.json"):
+                try:
+                    eval_metrics = evaluate_retrieval_performance(retrieval_results, center_paths, "ground_truth.json")
+                    if eval_metrics:
+                        # Save evaluation metrics
+                        eval_metrics_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.json')
+                        with open(eval_metrics_path, 'w') as f:
+                            json.dump(eval_metrics, f, indent=2)
+                        
+                        # Visualize evaluation metrics
+                        eval_chart_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.png')
+                        visualize_evaluation_metrics(eval_metrics, eval_chart_path)
+                        
+                        print(f"Evaluation metrics saved to {eval_metrics_path}")
+                        print(f"Evaluation chart saved to {eval_chart_path}")
+                except Exception as e:
+                    print(f"Error evaluating retrieval performance: {e}")
         
         # Annotate Video
         print("Step 7: Annotate Video...")
@@ -337,6 +506,63 @@ def main():
             print(f"The temporal consistency enhanced video has been saved to: {temporal_enhanced_video}")
         else:
             print(f"Warning: Labeled result file {detection_results_path} not found, unable to apply temporal consistency enhancement")
+    
+    # Compare different methods if both were evaluated
+    if args.do_retrieval and args.evaluate and os.path.exists("ground_truth.json"):
+        enhanced_metrics_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.json')
+        original_metrics_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.json')
+        
+        if os.path.exists(enhanced_metrics_path) and os.path.exists(original_metrics_path):
+            try:
+                with open(enhanced_metrics_path, 'r') as f:
+                    enhanced_metrics = json.load(f)
+                
+                with open(original_metrics_path, 'r') as f:
+                    original_metrics = json.load(f)
+                
+                print("\nComparison of Enhanced vs Original Methods:")
+                print(f"Enhanced Retrieval Accuracy: {enhanced_metrics['retrieval_accuracy']:.4f}")
+                print(f"Original Retrieval Accuracy: {original_metrics['retrieval_accuracy']:.4f}")
+                print(f"Difference: {enhanced_metrics['retrieval_accuracy'] - original_metrics['retrieval_accuracy']:.4f}")
+                
+                # Create comparison chart
+                plt.figure(figsize=(10, 6))
+                
+                # Metrics to compare
+                metrics_labels = ['Retrieval Accuracy', 'Rank-1 Accuracy']
+                enhanced_values = [enhanced_metrics['retrieval_accuracy'], enhanced_metrics['rank1_accuracy']]
+                original_values = [original_metrics['retrieval_accuracy'], original_metrics['rank1_accuracy']]
+                
+                x = np.arange(len(metrics_labels))
+                width = 0.35
+                
+                plt.bar(x - width/2, enhanced_values, width, label='Enhanced Method')
+                plt.bar(x + width/2, original_values, width, label='Original Method')
+                
+                plt.xlabel('Metrics')
+                plt.ylabel('Score')
+                plt.title('Comparison of Enhanced vs Original Methods')
+                plt.xticks(x, metrics_labels)
+                plt.ylim(0, 1.1)
+                plt.legend()
+                plt.grid(axis='y', alpha=0.3)
+                
+                # Add values on top of bars
+                for i, v in enumerate(enhanced_values):
+                    plt.text(i - width/2, v + 0.02, f'{v:.3f}', ha='center')
+                
+                for i, v in enumerate(original_values):
+                    plt.text(i + width/2, v + 0.02, f'{v:.3f}', ha='center')
+                
+                # Save comparison chart
+                comparison_chart_path = os.path.join(dirs['evaluation'], 'methods_comparison.png')
+                plt.tight_layout()
+                plt.savefig(comparison_chart_path, dpi=300)
+                plt.close()
+                
+                print(f"Methods comparison chart saved to {comparison_chart_path}")
+            except Exception as e:
+                print(f"Error creating methods comparison: {e}")
             
     print("Done!")
 
