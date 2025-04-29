@@ -24,6 +24,7 @@ import speaking_face_annotation
 import enhanced_face_retrieval
 import enhanced_video_annotation
 import robust_temporal_consistency
+import simple_evaluation
 
 tf.disable_v2_behavior()
 
@@ -418,7 +419,6 @@ def main():
                 frame_interval=args.retrieval_frames_interval,
                 batch_size=args.batch_size,
                 n_trees=args.annoy_trees,
-                n_results=args.retrieval_results,
                 similarity_threshold=args.similarity_threshold,
                 temporal_weight=args.temporal_weight,
                 coordinate_system=coordinate_system  # Pass coordinate system
@@ -515,6 +515,43 @@ def main():
         else:
             print(f"Warning: Labeled result file {detection_results_path} not found, unable to apply temporal consistency enhancement")
     
+    if args.evaluate:
+        print("Step 9: Evaluating detection and recognition performance...")
+
+        ground_truth_path = "ground_truth.json"
+
+        # Decide which detection result file to use for evaluation
+        if args.enhanced_annotation:
+            detection_results_path = os.path.join(args.output_dir, 'enhanced_detection_results.pkl')
+        else:
+            detection_results_path = os.path.join(dirs['retrieval'], 'detection_results.pkl')
+
+        if not os.path.exists(detection_results_path):
+            print(f"Warning: Detection results file {detection_results_path} not found, trying alternative paths...")
+            alternative_paths = [
+            os.path.join(args.output_dir, 'enhanced_detection_results.pkl'),
+            os.path.join(dirs['retrieval'], 'enhanced_retrieval_results.pkl'),
+            os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
+            ]
+
+            for path in alternative_paths:
+                if os.path.exists(path):
+                    detection_results_path = path
+                    print(f"Using detection results from: {detection_results_path}")
+                    break
+
+        if os.path.exists(detection_results_path):
+            # Create evaluation output directory
+            evaluation_output_dir = os.path.join(dirs['evaluation'])
+
+            # Evaluate
+            evaluator = simple_evaluation.SimpleEvaluator(ground_truth_path, detection_results_path)
+            evaluator.visualize_results(evaluation_output_dir)
+
+            print(f"Evaluation results saved to {evaluation_output_dir}")
+        else:
+            print("Warning: No detection results file found for evaluation. Skipping evaluation step.")
+
     print("Done!")
             
 
