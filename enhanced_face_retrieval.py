@@ -554,35 +554,45 @@ def visualize_frame_results(frame_results, center_paths, output_dir):
     plt.savefig(os.path.join(vis_dir, 'character_timeline.png'), dpi=200)
     plt.close()
 
-def enhanced_face_retrieval(video_path, centers_data_path, output_dir, model_dir, 
-                         frame_interval=5, batch_size=64, n_trees=15, n_results=10,
-                         similarity_threshold=0.5, temporal_weight=0.2):
+def enhanced_face_retrieval(video_path, centers_data_path, output_dir, model_dir,
+                           frame_interval=10, batch_size=100, n_trees=10, n_results=10,
+                           similarity_threshold=0.5, temporal_weight=0.3, coordinate_system=None):
     """
-    Main function for enhanced face retrieval
+    Main function for enhanced face retrieval with temporal consistency
     
     Args:
         video_path: Input video path
         centers_data_path: Path to cluster center data
         output_dir: Output directory
         model_dir: FaceNet model directory
-        frame_interval: Frame extraction interval (reduced for better coverage)
-        batch_size: Feature extraction batch size (reduced for stability)
-        n_trees: Number of trees for Annoy index (increased for accuracy)
+        frame_interval: Frame extraction interval
+        batch_size: Feature extraction batch size
+        n_trees: Number of trees for Annoy index
         n_results: Number of results to return per query
-        similarity_threshold: Minimum similarity threshold (lowered)
+        similarity_threshold: Similarity threshold for matching
         temporal_weight: Weight for temporal consistency
+        coordinate_system: Optional coordinate system info
     """
+    # If no coordinate system provided, try to get from centers data
+    if not coordinate_system:
+        print("No coordinate system provided, checking centers data...")
+        with open(centers_data_path, 'rb') as f:
+            centers_data = pickle.load(f)
+            if 'coordinate_system' in centers_data:
+                coordinate_system = centers_data['coordinate_system']
+                print(f"Using coordinate system from centers data: {coordinate_system['width']}x{coordinate_system['height']}")
+    
     # Load cluster center data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
     
-    # Build Annoy index with more trees
+    # Build Annoy index
     annoy_index = build_annoy_index(centers, n_trees)
     
     with tf.Graph().as_default():
         with tf.Session() as sess:
-            # Extract frames and detect faces from video with enhanced preprocessing
-            face_paths, frame_paths = extract_frames_and_faces(
-                video_path, output_dir, sess, frame_interval
+            # Extract frames and detect faces from video
+            face_paths = extract_frames_and_faces(
+                video_path, output_dir, sess, frame_interval, coordinate_system
             )
             
             # Load FaceNet model
@@ -593,32 +603,23 @@ def enhanced_face_retrieval(video_path, centers_data_path, output_dir, model_dir
             # Compute facial feature encodings
             facial_encodings = compute_face_encodings(sess, face_paths, batch_size)
             
-            # Prepare frame information for temporal consistency
-            frame_info_dict = {}
-            for path in facial_encodings.keys():
-                frame_num, _ = extract_frame_info(path)
-                frame_info_dict[path] = frame_num
-            
             # Search for similar faces with temporal consistency
             retrieval_results, frame_results = search_similar_faces_with_temporal(
-                annoy_index, facial_encodings, center_paths, frame_info_dict,
+                annoy_index, facial_encodings, center_paths, 
                 n_results, similarity_threshold, temporal_weight
             )
             
-            # Save retrieval results
-            results_data = {
-                'by_center': retrieval_results,
-                'by_frame': frame_results
-            }
-            results_path = os.path.join(output_dir, 'retrieval', 'enhanced_retrieval_results.pkl')
-            with open(results_path, 'wb') as f:
-                pickle.dump(results_data, f)
-            
             # Visualize retrieval results
             visualize_retrieval_results(retrieval_results, center_paths, output_dir, n_results)
-            visualize_frame_results(frame_results, center_paths, output_dir)
     
     print("Enhanced face retrieval completed!")
+    
+    results_with_metadata = {
+        'by_center': retrieval_results,
+        'by_frame': frame_results,
+        'coordinate_system': coordinate_system
+    }
+    
     return retrieval_results, frame_results
 
 if __name__ == "__main__":

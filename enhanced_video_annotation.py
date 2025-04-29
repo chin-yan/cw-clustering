@@ -15,6 +15,7 @@ import face_detection
 import feature_extraction
 import enhanced_face_preprocessing
 import math
+import json
 
 def load_centers_data(centers_data_path):
     """
@@ -83,9 +84,11 @@ def create_mtcnn_detector(sess):
 
 def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder, 
                          embeddings, phase_train_placeholder, centers, 
-                         frame_histories, min_face_size=20, temporal_weight=0.3):
+                         frame_histories, min_face_size=20, temporal_weight=0.3,
+                         coordinate_system=None):
     """
     Detect faces in a frame and match them with cluster centers using temporal consistency
+    with support for consistent coordinate systems
     
     Args:
         frame: Input video frame
@@ -98,6 +101,7 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         frame_histories: Face tracking histories
         min_face_size: Minimum face size for detection
         temporal_weight: Weight for temporal consistency
+        coordinate_system: Target coordinate system for standardized coordinates
         
     Returns:
         List of detected faces with bounding boxes and matched center indices
@@ -109,6 +113,16 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     else:
         frame_rgb = frame
+    
+    # Get frame dimensions
+    frame_height, frame_width = frame.shape[:2]
+    
+    # Calculate scale factors if coordinate system provided
+    scale_x = 1.0
+    scale_y = 1.0
+    if coordinate_system and coordinate_system.get("width", 0) > 0:
+        scale_x = coordinate_system["width"] / frame_width
+        scale_y = coordinate_system["height"] / frame_height
     
     # Detect faces with two passes (first for frontal, then for side faces)
     # First pass with standard parameters
@@ -127,6 +141,7 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
     # Preprocess faces and compute embeddings in batch for efficiency
     face_crops = []
     face_bboxes = []
+    face_original_bboxes = []
     
     # Process each detected face
     for bbox in bounding_boxes:
@@ -142,6 +157,12 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         x2 = min(frame.shape[1], bbox[2] + margin)
         y2 = min(frame.shape[0], bbox[3] + margin)
         
+        # Scale to standardized coordinate system
+        scaled_x1 = int(x1 * scale_x)
+        scaled_y1 = int(y1 * scale_y)
+        scaled_x2 = int(x2 * scale_x)
+        scaled_y2 = int(y2 * scale_y)
+        
         face = frame_rgb[y1:y2, x1:x2, :]
         
         # Skip invalid faces
@@ -156,7 +177,8 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         
         # Add to batch
         face_crops.append(face_prewhitened)
-        face_bboxes.append((x1, y1, x2, y2))
+        face_bboxes.append((scaled_x1, scaled_y1, scaled_x2, scaled_y2))  # Standardized coordinates
+        face_original_bboxes.append((x1, y1, x2, y2))  # Original display coordinates
     
     # If no valid faces, return empty list
     if not face_crops:
@@ -170,9 +192,9 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
     face_encodings = sess.run(embeddings, feed_dict=feed_dict)
     
     # Match each face with centers
-    for i, (bbox, encoding) in enumerate(zip(face_bboxes, face_encodings)):
+    for i, (bbox, original_bbox, encoding) in enumerate(zip(face_bboxes, face_original_bboxes, face_encodings)):
         # Generate a face ID based on position (simple tracking)
-        x1, y1, x2, y2 = bbox
+        x1, y1, x2, y2 = original_bbox
         face_id = f"{(x1 + x2) // 2}_{(y1 + y2) // 2}"  # Center position as ID
         
         # Get current match
@@ -248,7 +270,8 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
             pass
         
         faces.append({
-            'bbox': (x1, y1, x2, y2),
+            'bbox': bbox,  # Standardized coordinates
+            'original_bbox': original_bbox,  # Original display coordinates
             'match_idx': match_idx,
             'similarity': similarity,
             'face_id': face_id,
@@ -260,7 +283,7 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
 
 def annotate_video_with_enhanced_detection(input_video, output_video, centers_data_path, model_dir,
                                          detection_interval=1, similarity_threshold=0.55, 
-                                         temporal_weight=0.3):
+                                         temporal_weight=0.3, ground_truth_path=None):
     """
     Annotate video with face identities using enhanced detection and temporal consistency
     
@@ -272,9 +295,22 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
         detection_interval: Process every N frames for detection
         similarity_threshold: Minimum similarity threshold for matching
         temporal_weight: Weight for temporal consistency
+        ground_truth_path: Optional path to ground truth annotations for coordinate system
     """
     # Store the detection results of each frame
     frame_detection_results = {}
+
+    # Extract coordinate system from ground truth if available
+    coordinate_system = None
+    if ground_truth_path and os.path.exists(ground_truth_path):
+        try:
+            with open(ground_truth_path, 'r') as f:
+                ground_truth = json.load(f)
+                coordinate_system = ground_truth.get("coordinate_system")
+                if coordinate_system:
+                    print(f"Using ground truth coordinate system: {coordinate_system['width']}x{coordinate_system['height']}")
+        except Exception as e:
+            print(f"Error loading ground truth: {e}")
 
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
@@ -289,6 +325,16 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # If no coordinate system provided, use video dimensions
+    if not coordinate_system:
+        coordinate_system = {"width": width, "height": height}
+        print(f"Using video dimensions as coordinate system: {width}x{height}")
+    
+    # Calculate scale factors between detection and coordinate system
+    scale_x = coordinate_system["width"] / width
+    scale_y = coordinate_system["height"] / height
+    print(f"Using scale factors: x={scale_x:.4f}, y={scale_y:.4f}")
     
     # Create output video writer
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -354,7 +400,8 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                         frame, pnet, rnet, onet, sess, 
                         images_placeholder, embeddings, phase_train_placeholder, 
                         centers, frame_histories, 
-                        min_face_size=20, temporal_weight=temporal_weight
+                        min_face_size=20, temporal_weight=temporal_weight,
+                        coordinate_system=coordinate_system
                     )
                     
                     # Update cache
@@ -369,7 +416,16 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                 
                 # Annotate frame
                 for face in faces:
-                    x1, y1, x2, y2 = face['bbox']
+                    # Get original bbox coordinates (for display)
+                    x1, y1, x2, y2 = face['original_bbox'] if 'original_bbox' in face else face['bbox']
+                    
+                    # If using standardized coordinates, scale back to frame coordinates
+                    if 'original_bbox' not in face:
+                        x1 = int(x1 / scale_x)
+                        y1 = int(y1 / scale_y)
+                        x2 = int(x2 / scale_x)
+                        y2 = int(y2 / scale_y)
+                    
                     match_idx = face['match_idx']
                     similarity = face['similarity']
                     
@@ -400,7 +456,9 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                                 'face_id': face['face_id'],
                                 'match_idx': match_idx,
                                 'similarity': similarity,
-                                'position': ((x1 + x2) // 2, (y1 + y2) // 2)
+                                'position': ((x1 + x2) // 2, (y1 + y2) // 2),
+                                'bbox': [x1, y1, x2, y2],  # Original display coordinates
+                                'standardized_bbox': face['bbox']  # Standardized coordinates
                             })
                     else:
                         # Unmatched face - red box
@@ -439,15 +497,23 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
     # Save tracking data for analysis
     tracking_data_path = os.path.join(os.path.dirname(output_video), 'tracking_data.pkl')
     with open(tracking_data_path, 'wb') as f:
-        pickle.dump(tracking_data, f)
+        pickle.dump({
+            'tracking_data': tracking_data,
+            'coordinate_system': coordinate_system
+        }, f)
     
     print(f"Video annotation completed. Output saved to {output_video}")
     print(f"Tracking data saved to {tracking_data_path}")
     
-    # Save the test results for later processing
+    # Save the detection results with coordinate system info
+    detection_results = {
+        'coordinate_system': coordinate_system,
+        'frame_detection_results': frame_detection_results
+    }
+    
     detection_results_path = os.path.join(os.path.dirname(output_video), 'enhanced_detection_results.pkl')
     with open(detection_results_path, 'wb') as f:
-        pickle.dump(frame_detection_results, f)
+        pickle.dump(detection_results, f)
 
     print(f"The detection results have been saved to {detection_results_path}")
 

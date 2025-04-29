@@ -16,7 +16,39 @@ class FaceDetectionEvaluator:
             
         # Load detection results (pickle file)
         with open(detection_results_path, 'rb') as f:
-            self.detection_results = pickle.load(f)
+            detection_data = pickle.load(f)
+            
+        # Handle different detection result formats
+        if isinstance(detection_data, dict) and 'frame_detection_results' in detection_data:
+            self.detection_results = detection_data['frame_detection_results']
+            self.detection_coordinate_system = detection_data.get('coordinate_system')
+        else:
+            self.detection_results = detection_data
+            self.detection_coordinate_system = None
+        
+        # Extract coordinate system from ground truth
+        self.ground_truth_coordinate_system = self.ground_truth.get('coordinate_system')
+        
+        # Print coordinate system info
+        if self.ground_truth_coordinate_system:
+            print(f"Ground truth coordinate system: {self.ground_truth_coordinate_system['width']}x{self.ground_truth_coordinate_system['height']}")
+        if self.detection_coordinate_system:
+            print(f"Detection coordinate system: {self.detection_coordinate_system['width']}x{self.detection_coordinate_system['height']}")
+        
+        # Calculate scale factors if both coordinate systems are available
+        self.scale_x = 1.0
+        self.scale_y = 1.0
+        
+        if self.ground_truth_coordinate_system and self.detection_coordinate_system:
+            gt_width = self.ground_truth_coordinate_system['width']
+            gt_height = self.ground_truth_coordinate_system['height']
+            det_width = self.detection_coordinate_system['width']
+            det_height = self.detection_coordinate_system['height']
+            
+            if gt_width > 0 and det_width > 0:
+                self.scale_x = det_width / gt_width
+                self.scale_y = det_height / gt_height
+                print(f"Coordinate scale factors: x={self.scale_x:.4f}, y={self.scale_y:.4f}")
         
         # Convert to frame-indexed dictionaries for easier access
         if "frames" in self.ground_truth:
@@ -72,7 +104,22 @@ class FaceDetectionEvaluator:
             x1, y1, x2, y2 = 0, 0, 0, 0  # Default values
             if "bbox" in face:
                 bbox = face["bbox"]
-                x1, y1, x2, y2 = bbox  # Assume [x1, y1, x2, y2] format
+    def _convert_single_face_to_frame_based(self):
+        """Convert single-face format ground truth to frame-based format"""
+        frames_dict = {}
+        
+        # Group faces by frame_id
+        for face in self.ground_truth["faces"]:
+            frame_id = face["frame_id"]
+            if frame_id not in frames_dict:
+                frames_dict[frame_id] = {"frame_id": frame_id, "faces": []}
+                
+            # Add face data to the frame
+            x1, y1, x2, y2 = 0, 0, 0, 0  # Default values
+            if "bbox" in face:
+                bbox = face["bbox"]
+                if len(bbox) == 4:
+                    x1, y1, x2, y2 = bbox  # Assume [x1, y1, x2, y2] format
             elif "face_path" in face:
                 # Try to extract from filename - might need adjustment based on your naming convention
                 # This is a placeholder and might need to be customized
@@ -80,8 +127,9 @@ class FaceDetectionEvaluator:
                 
             frames_dict[frame_id]["faces"].append({
                 "face_id": face["face_id"],
-                "bbox": [x1, y1, x2-x1, y2-y1],  # Convert to [x, y, width, height] format
-                "person_name": face.get("person_name", "")
+                "bbox": [x1, y1, x2, y2],  # Keep in [x1, y1, x2, y2] format
+                "person_name": face.get("person_name", ""),
+                "face_path": face.get("face_path", "")
             })
             
         print(f"Converted {len(self.ground_truth['faces'])} faces to {len(frames_dict)} frames")
@@ -119,6 +167,56 @@ class FaceDetectionEvaluator:
                 return closest_key
                 
         return None
+    
+    def _standardize_bbox(self, bbox, source="gt"):
+        """
+        Standardize bounding box to [x1, y1, x2, y2] format and scale to detection coordinate system
+        
+        Args:
+            bbox: The bounding box in various formats
+            source: Source of the bbox ('gt' or 'det')
+            
+        Returns:
+            Standardized bbox in [x1, y1, x2, y2] format
+        """
+        # Convert bbox to list format
+        if isinstance(bbox, tuple):
+            bbox = list(bbox)
+        
+        # Check if it's a valid bbox
+        if not bbox or len(bbox) != 4:
+            return None
+            
+        # Determine if bbox is in [x1, y1, x2, y2] or [x, y, width, height] format
+        # Heuristic: If the third value (width or x2) is smaller than the first value (x)
+        # or the fourth value (height or y2) is smaller than the second value (y),
+        # then it's likely [x, y, width, height]
+        is_xywh = False
+        if bbox[2] < 100 and bbox[3] < 100:  # Small values, likely width/height
+            is_xywh = True
+        
+        # Convert to [x1, y1, x2, y2] format
+        if is_xywh:
+            x1, y1, w, h = bbox
+            x2, y2 = x1 + w, y1 + h
+        else:
+            x1, y1, x2, y2 = bbox
+        
+        # Scale coordinates if needed
+        if source == "gt" and self.scale_x != 1.0:
+            # Scale ground truth to match detection coordinates
+            x1 = int(x1 * self.scale_x)
+            y1 = int(y1 * self.scale_y)
+            x2 = int(x2 * self.scale_x)
+            y2 = int(y2 * self.scale_y)
+        elif source == "det" and self.scale_x != 1.0:
+            # Scale detection to match ground truth coordinates (inverse)
+            x1 = int(x1 / self.scale_x)
+            y1 = int(y1 / self.scale_y)
+            x2 = int(x2 / self.scale_x)
+            y2 = int(y2 / self.scale_y)
+        
+        return [x1, y1, x2, y2]
         
     def evaluate_detection(self, iou_threshold=0.5):
         """
@@ -151,94 +249,36 @@ class FaceDetectionEvaluator:
                 det_faces = self.det_by_frame[matched_frame_id]
                 matched_frames += 1
                 
-                # Convert GT bboxes to [x1, y1, x2, y2] format for IoU calculation
-                gt_bboxes = []
+                # Convert GT bboxes to standardized format
+                gt_bboxes_std = []
                 for face in gt_frame["faces"]:
                     bbox = face["bbox"]
-                    # Check bbox format and convert if needed
-                    if len(bbox) == 4:
-                        if isinstance(bbox[0], (int, float)) and isinstance(bbox[2], (int, float)):
-                            # Check if it's likely width/height format or x1,y1,x2,y2 format
-                            # This is a heuristic - might need adjustment for your specific dataset
-                            if bbox[2] < 100 and bbox[3] < 100:  # Likely width/height format
-                                gt_bboxes.append([
-                                    bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]
-                                ])
-                            else:  # Likely already x1,y1,x2,y2 format
-                                gt_bboxes.append(bbox)
+                    std_bbox = self._standardize_bbox(bbox, source="gt")
+                    if std_bbox:
+                        gt_bboxes_std.append(std_bbox)
                 
-                # Convert detection bboxes to the same format
-                det_bboxes = []
+                # Convert detection bboxes to standardized format
+                det_bboxes_std = []
                 for face in det_faces:
-                    bbox = face["bbox"]
-                    
-                    # Handle different detection bbox formats
-                    if isinstance(bbox, tuple) and len(bbox) == 4:
-                        # Already a tuple, convert to list for consistency
-                        det_bbox = list(bbox)
-                        # Check if it's in x1,y1,x2,y2 format or x,y,w,h format
-                        if det_bbox[2] < det_bbox[0] or det_bbox[3] < det_bbox[1]:
-                            # Invalid - width/height might be negative
-                            print(f"Warning: Invalid bbox detected {det_bbox}")
-                            continue
-                        elif det_bbox[2] < 100 and det_bbox[3] < 100:
-                            # Likely width/height format
-                            det_bboxes.append([
-                                det_bbox[0], det_bbox[1], 
-                                det_bbox[0] + det_bbox[2], det_bbox[1] + det_bbox[3]
-                            ])
-                        else:
-                            # Already in x1,y1,x2,y2 format
-                            det_bboxes.append(det_bbox)
-                    elif isinstance(bbox, list) and len(bbox) == 4:
-                        # Already a list
-                        # Check if it's in x1,y1,x2,y2 format or x,y,w,h format
-                        if bbox[2] < bbox[0] or bbox[3] < bbox[1]:
-                            # Invalid - width/height might be negative
-                            print(f"Warning: Invalid bbox detected {bbox}")
-                            continue
-                        elif bbox[2] < 100 and bbox[3] < 100:
-                            # Likely width/height format
-                            det_bboxes.append([
-                                bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]
-                            ])
-                        else:
-                            # Already in x1,y1,x2,y2 format
-                            det_bboxes.append(bbox)
-                    else:
-                        # Handle unexpected formats
-                        print(f"Warning: Unexpected bbox format {bbox} in frame {matched_frame_id}")
-                        continue
+                    # Use standardized_bbox if available, otherwise use bbox
+                    bbox = face.get("standardized_bbox", face["bbox"])
+                    std_bbox = self._standardize_bbox(bbox, source="det")
+                    if std_bbox:
+                        det_bboxes_std.append(std_bbox)
                 
-                # Scale detection bboxes if needed (if there's a significant scale difference)
-                # This is a heuristic and might need adjustment for your specific dataset
-                if len(gt_bboxes) > 0 and len(det_bboxes) > 0:
-                    # Check if there's a significant scale difference
-                    gt_area = (gt_bboxes[0][2] - gt_bboxes[0][0]) * (gt_bboxes[0][3] - gt_bboxes[0][1])
-                    det_area = (det_bboxes[0][2] - det_bboxes[0][0]) * (det_bboxes[0][3] - det_bboxes[0][1])
-                    
-                    if det_area > 4 * gt_area:  # Detection areas are much larger
-                        scale_factor = (gt_area / det_area) ** 0.5
-                        scaled_det_bboxes = []
-                        for det_bbox in det_bboxes:
-                            center_x = (det_bbox[0] + det_bbox[2]) / 2
-                            center_y = (det_bbox[1] + det_bbox[3]) / 2
-                            width = (det_bbox[2] - det_bbox[0]) * scale_factor
-                            height = (det_bbox[3] - det_bbox[1]) * scale_factor
-                            scaled_det_bboxes.append([
-                                center_x - width/2, center_y - height/2,
-                                center_x + width/2, center_y + height/2
-                            ])
-                        det_bboxes = scaled_det_bboxes
+                # Print some debug info for the first few frames
+                if processed_frames <= 5:
+                    print(f"Frame {frame_id}: GT bboxes: {gt_bboxes_std}")
+                    print(f"Frame {matched_frame_id}: Det bboxes: {det_bboxes_std}")
                 
                 # Match detections to ground truth using IoU
                 matched_gt_indices = set()
                 
-                for det_idx, det_bbox in enumerate(det_bboxes):
+                for det_idx, det_bbox in enumerate(det_bboxes_std):
                     best_iou = 0
                     best_gt_idx = -1
                     
-                    for gt_idx, gt_bbox in enumerate(gt_bboxes):
+                    for gt_idx, gt_bbox in enumerate(gt_bboxes_std):
                         if gt_idx in matched_gt_indices:
                             continue  # Skip already matched GT bboxes
                         
@@ -250,11 +290,18 @@ class FaceDetectionEvaluator:
                     if best_iou >= iou_threshold:
                         true_positives += 1
                         matched_gt_indices.add(best_gt_idx)
+                        if processed_frames <= 5:
+                            print(f"Match found: Det {det_idx} with GT {best_gt_idx}, IoU: {best_iou:.3f}")
                     else:
                         false_positives += 1
+                        if processed_frames <= 5:
+                            print(f"No match for Det {det_idx}, best IoU: {best_iou:.3f}")
                 
                 # Count unmatched ground truth as false negatives
-                false_negatives += len(gt_bboxes) - len(matched_gt_indices)
+                false_negatives += len(gt_bboxes_std) - len(matched_gt_indices)
+                if processed_frames <= 5 and len(gt_bboxes_std) > len(matched_gt_indices):
+                    unmatched = [i for i in range(len(gt_bboxes_std)) if i not in matched_gt_indices]
+                    print(f"Unmatched GT bboxes: {unmatched}")
             else:
                 if len(gt_frame["faces"]) > 0:
                     missing_det_frames.append(frame_id)
@@ -269,9 +316,6 @@ class FaceDetectionEvaluator:
             if matched_gt_id is None:
                 # If we found a detection frame that's not in ground truth
                 missing_gt_frames.append(frame_key)
-                # false_positives += len(self.det_by_frame[frame_key])
-                # Don't count these as false positives since they may be from frames
-                # that weren't annotated in the ground truth
         
         # Print debug information
         print(f"Processed {processed_frames} frames from ground truth")
@@ -319,8 +363,12 @@ class FaceDetectionEvaluator:
             if len(sample_faces) > 0:
                 print(f"Sample face fields: {sample_faces[0].keys()}")
         
+        # Create a mapping from match_idx to ground truth face_id
+        center_to_gt_mapping = {}
+        
         # Keep track of face ID conflicts
         id_conflicts = 0
+        detailed_conflicts = []
         
         for frame_id, gt_frame in self.gt_by_frame.items():
             # Find matching frame ID in detection results
@@ -332,93 +380,39 @@ class FaceDetectionEvaluator:
             # Get detected faces for this frame
             det_faces = self.det_by_frame[matched_frame_id]
             
-            # Convert GT data
-            gt_bboxes = []
+            # Convert GT bboxes to standardized format
+            gt_bboxes_std = []
             gt_ids = []
             for face in gt_frame["faces"]:
                 bbox = face["bbox"]
-                # Check bbox format and convert if needed
-                if len(bbox) == 4:
-                    if bbox[2] < 100 and bbox[3] < 100:  # Likely width/height format
-                        gt_bboxes.append([
-                            bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]
-                        ])
-                    else:  # Likely already x1,y1,x2,y2 format
-                        gt_bboxes.append(bbox)
-                gt_ids.append(face["face_id"])
+                std_bbox = self._standardize_bbox(bbox, source="gt")
+                if std_bbox:
+                    gt_bboxes_std.append(std_bbox)
+                    gt_ids.append(face["face_id"])
             
-            # Convert detection data
-            det_bboxes = []
+            # Convert detection bboxes to standardized format
+            det_bboxes_std = []
             det_ids = []
             for face in det_faces:
-                bbox = face["bbox"]
-                
-                # Handle different detection bbox formats
-                if isinstance(bbox, tuple) and len(bbox) == 4:
-                    # Already a tuple, convert to list for consistency
-                    det_bbox = list(bbox)
-                    if det_bbox[2] < 100 and det_bbox[3] < 100:
-                        # Likely width/height format
-                        det_bboxes.append([
-                            det_bbox[0], det_bbox[1], 
-                            det_bbox[0] + det_bbox[2], det_bbox[1] + det_bbox[3]
-                        ])
-                    else:
-                        # Already in x1,y1,x2,y2 format
-                        det_bboxes.append(det_bbox)
-                elif isinstance(bbox, list) and len(bbox) == 4:
-                    # Already a list
-                    if bbox[2] < 100 and bbox[3] < 100:
-                        # Likely width/height format
-                        det_bboxes.append([
-                            bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]
-                        ])
-                    else:
-                        # Already in x1,y1,x2,y2 format
-                        det_bboxes.append(bbox)
-                else:
-                    # Handle unexpected formats
-                    print(f"Warning: Unexpected bbox format {bbox}")
-                    continue
-                
-                # Check which field contains the ID information
-                face_id = -1
-                if "match_idx" in face:
-                    face_id = face["match_idx"]
-                elif "face_id" in face:
-                    face_id = face["face_id"]
-                else:
-                    # Default to -1 if no ID field found
-                    print(f"Warning: No ID field found in detection result for frame {matched_frame_id}")
-                
-                det_ids.append(face_id)
-            
-            # Scale detection bboxes if needed
-            if len(gt_bboxes) > 0 and len(det_bboxes) > 0:
-                # Check if there's a significant scale difference
-                gt_area = (gt_bboxes[0][2] - gt_bboxes[0][0]) * (gt_bboxes[0][3] - gt_bboxes[0][1])
-                det_area = (det_bboxes[0][2] - det_bboxes[0][0]) * (det_bboxes[0][3] - det_bboxes[0][1])
-                
-                if det_area > 4 * gt_area:  # Detection areas are much larger
-                    scale_factor = (gt_area / det_area) ** 0.5
-                    scaled_det_bboxes = []
-                    for det_bbox in det_bboxes:
-                        center_x = (det_bbox[0] + det_bbox[2]) / 2
-                        center_y = (det_bbox[1] + det_bbox[3]) / 2
-                        width = (det_bbox[2] - det_bbox[0]) * scale_factor
-                        height = (det_bbox[3] - det_bbox[1]) * scale_factor
-                        scaled_det_bboxes.append([
-                            center_x - width/2, center_y - height/2,
-                            center_x + width/2, center_y + height/2
-                        ])
-                    det_bboxes = scaled_det_bboxes
+                # Use standardized_bbox if available, otherwise use bbox
+                bbox = face.get("standardized_bbox", face["bbox"])
+                std_bbox = self._standardize_bbox(bbox, source="det")
+                if std_bbox:
+                    det_bboxes_std.append(std_bbox)
+                    # Check which field contains the ID information
+                    face_id = -1
+                    if "match_idx" in face:
+                        face_id = face["match_idx"]
+                    elif "face_id" in face:
+                        face_id = face["face_id"]
+                    det_ids.append(face_id)
             
             # Match detections to ground truth
-            for det_idx, det_bbox in enumerate(det_bboxes):
+            for det_idx, det_bbox in enumerate(det_bboxes_std):
                 best_iou = 0
                 best_gt_idx = -1
                 
-                for gt_idx, gt_bbox in enumerate(gt_bboxes):
+                for gt_idx, gt_bbox in enumerate(gt_bboxes_std):
                     iou = self._compute_iou(det_bbox, gt_bbox)
                     if iou > best_iou:
                         best_iou = iou
@@ -431,16 +425,23 @@ class FaceDetectionEvaluator:
                         gt_id = gt_ids[best_gt_idx]
                         det_id = det_ids[det_idx]
                         
-                        if gt_id == det_id:
+                        # Update center to ground truth mapping
+                        if det_id not in center_to_gt_mapping:
+                            center_to_gt_mapping[det_id] = gt_id
+                        
+                        # If the mapping exists but differs, use the most common mapping
+                        if center_to_gt_mapping[det_id] == gt_id:
                             correct_identifications += 1
                         else:
                             # ID conflict - helpful for debugging
                             id_conflicts += 1
+                            detailed_conflicts.append((det_id, gt_id, center_to_gt_mapping[det_id]))
                             if id_conflicts <= 5:  # Limit the number of conflicts to report
-                                print(f"ID conflict: Ground truth ID {gt_id} vs Detection ID {det_id} in frame {frame_id}")
+                                print(f"ID conflict: Detection ID {det_id} matched with GT ID {gt_id}, but previous mapping was {center_to_gt_mapping[det_id]}")
         
         # Print debug information
         print(f"Total ID conflicts: {id_conflicts}")
+        print(f"Center to GT mapping: {center_to_gt_mapping}")
         
         # Calculate recognition accuracy
         recognition_accuracy = correct_identifications / total_matched_faces if total_matched_faces > 0 else 0
@@ -448,7 +449,8 @@ class FaceDetectionEvaluator:
         return {
             "recognition_accuracy": recognition_accuracy,
             "correct_identifications": correct_identifications,
-            "total_matched_faces": total_matched_faces
+            "total_matched_faces": total_matched_faces,
+            "center_to_gt_mapping": center_to_gt_mapping
         }
     
     def _compute_iou(self, box1, box2):
@@ -494,82 +496,6 @@ class FaceDetectionEvaluator:
         iou = intersection_area / float(box1_area + box2_area - intersection_area)
         return iou
 
-    def convert_ground_truth_formats(self, output_path=None):
-        """
-        Convert between different ground truth formats
-        
-        Args:
-            output_path: Path to save the converted ground truth file
-            
-        Returns:
-            The converted ground truth data
-        """
-        # If ground truth is frame-based, convert to single-face format
-        if "frames" in self.ground_truth:
-            print("Converting from frame-based to single-face format...")
-            single_face_data = {
-                "video_name": self.ground_truth.get("video_name", "unknown"),
-                "faces": []
-            }
-            
-            for frame in self.ground_truth["frames"]:
-                frame_id = frame["frame_id"]
-                for i, face in enumerate(frame["faces"]):
-                    # Skip faces without valid IDs
-                    if face["face_id"] < 0:
-                        continue
-                        
-                    single_face_data["faces"].append({
-                        "face_path": face.get("face_path", f"frame_{frame_id}_face_{i}.jpg"),
-                        "frame_id": frame_id,
-                        "face_idx": i,
-                        "face_id": face["face_id"],
-                        "person_name": face.get("person_name", f"Person {face['face_id']}")
-                    })
-            
-            if output_path:
-                with open(output_path, 'w') as f:
-                    json.dump(single_face_data, f, indent=2)
-                print(f"Converted single-face format saved to {output_path}")
-            
-            return single_face_data
-            
-        # If ground truth is single-face format, convert to frame-based format
-        else:
-            print("Converting from single-face format to frame-based format...")
-            frame_based_data = {
-                "video_name": self.ground_truth.get("video_name", "unknown"),
-                "frames": []
-            }
-            
-            # Group faces by frame_id
-            frames_dict = {}
-            for face in self.ground_truth["faces"]:
-                frame_id = face["frame_id"]
-                if frame_id not in frames_dict:
-                    frames_dict[frame_id] = {"frame_id": frame_id, "faces": []}
-                
-                # Try to get bbox from face_path - this is a placeholder
-                # and might need to be adjusted based on your implementation
-                face_path = face.get("face_path", "")
-                
-                frames_dict[frame_id]["faces"].append({
-                    "face_id": face["face_id"],
-                    "bbox": [0, 0, 0, 0],  # Placeholder
-                    "person_name": face.get("person_name", ""),
-                    "face_path": face_path
-                })
-            
-            # Convert dictionary to list
-            frame_based_data["frames"] = list(frames_dict.values())
-            
-            if output_path:
-                with open(output_path, 'w') as f:
-                    json.dump(frame_based_data, f, indent=2)
-                print(f"Converted frame-based format saved to {output_path}")
-            
-            return frame_based_data
-
 if __name__ == "__main__":
     ground_truth_path = "ground_truth.json"
     # Try to find detection results path
@@ -593,13 +519,8 @@ if __name__ == "__main__":
     
     evaluator = FaceDetectionEvaluator(ground_truth_path, detection_results_path)
     
-    # Try to convert ground truth format if needed
-    if "frames" not in evaluator.ground_truth and "faces" in evaluator.ground_truth:
-        print("Converting single-face ground truth to frame-based format for evaluation...")
-        evaluator.convert_ground_truth_formats("ground_truth_frame_based.json")
-    
     # Evaluate detection performance
-    detection_metrics = evaluator.evaluate_detection()
+    detection_metrics = evaluator.evaluate_detection(iou_threshold=0.5)
     print("\nFace Detection Performance:")
     print(f"Precision: {detection_metrics['precision']:.4f}")
     print(f"Recall: {detection_metrics['recall']:.4f}")
@@ -609,7 +530,7 @@ if __name__ == "__main__":
     print(f"False Negatives: {detection_metrics['false_negatives']}")
     
     # Evaluate recognition performance
-    recognition_metrics = evaluator.evaluate_recognition()
+    recognition_metrics = evaluator.evaluate_recognition(iou_threshold=0.5)
     print("\nFace Recognition Performance:")
     print(f"Recognition Accuracy: {recognition_metrics['recognition_accuracy']:.4f}")
     print(f"Correct Identifications: {recognition_metrics['correct_identifications']}")

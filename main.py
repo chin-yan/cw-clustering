@@ -243,22 +243,46 @@ def main():
     dirs = create_directories(args.output_dir)
     frames_paths, temp_frames_dir = extract_frames(args.input_video, args.output_dir, args.frames_interval)
     
+    # Get video dimensions for coordinate system
+    cap = cv2.VideoCapture(args.input_video)
+    video_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    
+    # Create coordinate system info
+    coordinate_system = {
+        "width": video_width,
+        "height": video_height
+    }
+    print(f"Using video coordinate system: {video_width}x{video_height}")
+    
+    # Save coordinate system info for future reference
+    coord_sys_path = os.path.join(args.output_dir, 'coordinate_system.json')
+    with open(coord_sys_path, 'w') as f:
+        json.dump(coordinate_system, f, indent=2)
+    
     with tf.Graph().as_default():
         with tf.Session() as sess:
             print(f"Running with method: {args.method}")
             
             print("Step 1: Detect faces from frames...")
+            detection_metadata_path = os.path.join(args.output_dir, 'detection_metadata.json')
+            
             if args.method == 'adjusted' or args.method == 'hybrid':
                 print("Using adjusted face detection and preprocessing...")
-                face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
+                face_paths, detection_metadata = enhanced_face_preprocessing.detect_faces_adjusted(
                     sess, frames_paths, dirs['faces'], dirs['frames'], 
-                    min_face_size=20, face_size=args.face_size
+                    min_face_size=20, face_size=args.face_size,
+                    coordinate_system=coordinate_system,
+                    output_metadata_path=detection_metadata_path
                 )
             else:
-                # Original method
-                face_paths = face_detection.detect_faces_in_frames(
+                # Original method with coordinate system tracking
+                face_paths, detection_metadata = face_detection.detect_faces_in_frames(
                     sess, frames_paths, dirs['faces'], dirs['frames'],
-                    min_face_size=20, face_size=args.face_size
+                    min_face_size=20, face_size=args.face_size,
+                    coordinate_system=coordinate_system,
+                    output_metadata_path=detection_metadata_path
                 )
                 
             # Clean up temporary frames directory
@@ -364,7 +388,8 @@ def main():
             centers_data = {
                 'clusters': clusters,
                 'facial_encodings': facial_encodings,
-                'cluster_centers': cluster_centers
+                'cluster_centers': cluster_centers,
+                'coordinate_system': coordinate_system  # Add coordinate system
             }
             
             centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
@@ -395,32 +420,18 @@ def main():
                 n_trees=args.annoy_trees,
                 n_results=args.retrieval_results,
                 similarity_threshold=args.similarity_threshold,
-                temporal_weight=args.temporal_weight
+                temporal_weight=args.temporal_weight,
+                coordinate_system=coordinate_system  # Pass coordinate system
             )
             
-            # Save Search Results
+            # Save Search Results with coordinate system
             retrieval_results_path = os.path.join(dirs['retrieval'], 'enhanced_retrieval_results.pkl')
             with open(retrieval_results_path, 'wb') as f:
-                pickle.dump({'by_center': retrieval_results, 'by_frame': frame_results}, f)
-                
-            # Evaluate retrieval performance if requested
-            if args.evaluate and os.path.exists("ground_truth.json"):
-                try:
-                    eval_metrics = evaluate_retrieval_performance(retrieval_results, center_paths, "ground_truth.json")
-                    if eval_metrics:
-                        # Save evaluation metrics
-                        eval_metrics_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.json')
-                        with open(eval_metrics_path, 'w') as f:
-                            json.dump(eval_metrics, f, indent=2)
-                        
-                        # Visualize evaluation metrics
-                        eval_chart_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.png')
-                        visualize_evaluation_metrics(eval_metrics, eval_chart_path)
-                        
-                        print(f"Evaluation metrics saved to {eval_metrics_path}")
-                        print(f"Evaluation chart saved to {eval_chart_path}")
-                except Exception as e:
-                    print(f"Error evaluating retrieval performance: {e}")
+                pickle.dump({
+                    'by_center': retrieval_results, 
+                    'by_frame': frame_results,
+                    'coordinate_system': coordinate_system
+                }, f)
         else:
             # original results
             retrieval_results = face_retrieval.face_retrieval(
@@ -431,35 +442,23 @@ def main():
                 frame_interval=args.retrieval_frames_interval,
                 batch_size=args.batch_size,
                 n_trees=args.annoy_trees,
-                n_results=args.retrieval_results
+                n_results=args.retrieval_results,
+                coordinate_system=coordinate_system  # Pass coordinate system
             )
             
-            # Save Search Results
+            # Save Search Results with coordinate system
             retrieval_results_path = os.path.join(dirs['retrieval'], 'retrieval_results.pkl')
             with open(retrieval_results_path, 'wb') as f:
-                pickle.dump(retrieval_results, f)
-                
-            # Evaluate retrieval performance if requested
-            if args.evaluate and os.path.exists("ground_truth.json"):
-                try:
-                    eval_metrics = evaluate_retrieval_performance(retrieval_results, center_paths, "ground_truth.json")
-                    if eval_metrics:
-                        # Save evaluation metrics
-                        eval_metrics_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.json')
-                        with open(eval_metrics_path, 'w') as f:
-                            json.dump(eval_metrics, f, indent=2)
-                        
-                        # Visualize evaluation metrics
-                        eval_chart_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.png')
-                        visualize_evaluation_metrics(eval_metrics, eval_chart_path)
-                        
-                        print(f"Evaluation metrics saved to {eval_metrics_path}")
-                        print(f"Evaluation chart saved to {eval_chart_path}")
-                except Exception as e:
-                    print(f"Error evaluating retrieval performance: {e}")
+                pickle.dump({
+                    'results': retrieval_results,
+                    'coordinate_system': coordinate_system
+                }, f)
         
         # Annotate Video
         print("Step 7: Annotate Video...")
+        # Pass ground truth path to use its coordinate system
+        ground_truth_path = "ground_truth.json" if os.path.exists("ground_truth.json") else None
+        
         if args.enhanced_annotation:
             print("Using Enhanced Video Annotation...")
             output_video = os.path.join(args.output_dir, 'enhanced_annotated_video.avi')
@@ -470,22 +469,9 @@ def main():
                 model_dir=args.model_dir,
                 detection_interval=2,
                 similarity_threshold=args.similarity_threshold,
-                temporal_weight=args.temporal_weight
+                temporal_weight=args.temporal_weight,
+                ground_truth_path=ground_truth_path  # Pass ground truth path
             )
-            
-            # Try to label speaking faces
-            try:
-                speaking_output_video = os.path.join(args.output_dir, 'enhanced_speaking_face_video.avi')
-                enhanced_video_annotation.annotate_speaking_face_with_enhanced_detection(
-                    input_video=args.input_video,
-                    output_video=speaking_output_video,
-                    centers_data_path=centers_data_path,
-                    model_dir=args.model_dir,
-                    detection_interval=2
-                )
-            except Exception as e:
-                print(f"An error occurred while labeling the speaking face: {e}")
-                print("Make sure you have installed librosa and soundfile for audio processing")
         else:
             # Original video annotation
             output_video = os.path.join(args.output_dir, 'annotated_video.avi')
@@ -493,8 +479,10 @@ def main():
                 input_video=args.input_video,
                 output_video=output_video,
                 centers_data_path=centers_data_path,
-                model_dir=args.model_dir
+                model_dir=args.model_dir,
+                ground_truth_path=ground_truth_path  # Pass ground truth path
             )
+    
     if args.do_retrieval and args.temporal_consistency:
         print("Step 8: Apply time consistency enhancement...")
 
@@ -513,77 +501,22 @@ def main():
 
             # Calling time consistency enhancement function
             robust_temporal_consistency.enhance_video_temporal_consistency(
-            input_video=args.input_video,
-            annotation_file=detection_results_path,
-            output_video=temporal_enhanced_video,
-            centers_data_path=centers_data_path,
-            temporal_window=args.temporal_window,
-            confidence_threshold=args.similarity_threshold,
-            min_votes = args.min_votes
+                input_video=args.input_video,
+                annotation_file=detection_results_path,
+                output_video=temporal_enhanced_video,
+                centers_data_path=centers_data_path,
+                temporal_window=args.temporal_window,
+                confidence_threshold=args.similarity_threshold,
+                min_votes=args.min_votes,
+                coordinate_system=coordinate_system  # Pass coordinate system
             )
 
             print(f"The temporal consistency enhanced video has been saved to: {temporal_enhanced_video}")
         else:
             print(f"Warning: Labeled result file {detection_results_path} not found, unable to apply temporal consistency enhancement")
     
-    # Compare different methods if both were evaluated
-    if args.do_retrieval and args.evaluate and os.path.exists("ground_truth.json"):
-        enhanced_metrics_path = os.path.join(dirs['evaluation'], 'enhanced_retrieval_metrics.json')
-        original_metrics_path = os.path.join(dirs['evaluation'], 'retrieval_metrics.json')
-        
-        if os.path.exists(enhanced_metrics_path) and os.path.exists(original_metrics_path):
-            try:
-                with open(enhanced_metrics_path, 'r') as f:
-                    enhanced_metrics = json.load(f)
-                
-                with open(original_metrics_path, 'r') as f:
-                    original_metrics = json.load(f)
-                
-                print("\nComparison of Enhanced vs Original Methods:")
-                print(f"Enhanced Retrieval Accuracy: {enhanced_metrics['retrieval_accuracy']:.4f}")
-                print(f"Original Retrieval Accuracy: {original_metrics['retrieval_accuracy']:.4f}")
-                print(f"Difference: {enhanced_metrics['retrieval_accuracy'] - original_metrics['retrieval_accuracy']:.4f}")
-                
-                # Create comparison chart
-                plt.figure(figsize=(10, 6))
-                
-                # Metrics to compare
-                metrics_labels = ['Retrieval Accuracy', 'Rank-1 Accuracy']
-                enhanced_values = [enhanced_metrics['retrieval_accuracy'], enhanced_metrics['rank1_accuracy']]
-                original_values = [original_metrics['retrieval_accuracy'], original_metrics['rank1_accuracy']]
-                
-                x = np.arange(len(metrics_labels))
-                width = 0.35
-                
-                plt.bar(x - width/2, enhanced_values, width, label='Enhanced Method')
-                plt.bar(x + width/2, original_values, width, label='Original Method')
-                
-                plt.xlabel('Metrics')
-                plt.ylabel('Score')
-                plt.title('Comparison of Enhanced vs Original Methods')
-                plt.xticks(x, metrics_labels)
-                plt.ylim(0, 1.1)
-                plt.legend()
-                plt.grid(axis='y', alpha=0.3)
-                
-                # Add values on top of bars
-                for i, v in enumerate(enhanced_values):
-                    plt.text(i - width/2, v + 0.02, f'{v:.3f}', ha='center')
-                
-                for i, v in enumerate(original_values):
-                    plt.text(i + width/2, v + 0.02, f'{v:.3f}', ha='center')
-                
-                # Save comparison chart
-                comparison_chart_path = os.path.join(dirs['evaluation'], 'methods_comparison.png')
-                plt.tight_layout()
-                plt.savefig(comparison_chart_path, dpi=300)
-                plt.close()
-                
-                print(f"Methods comparison chart saved to {comparison_chart_path}")
-            except Exception as e:
-                print(f"Error creating methods comparison: {e}")
-            
     print("Done!")
+            
 
 if __name__ == "__main__":
     main()
