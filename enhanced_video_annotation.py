@@ -13,8 +13,6 @@ from facenet.src import facenet
 
 import face_detection
 import feature_extraction
-import enhanced_face_preprocessing
-import math
 
 def load_centers_data(centers_data_path):
     """
@@ -455,6 +453,7 @@ def annotate_speaking_face_with_enhanced_detection(input_video, output_video, ce
                                                 detection_interval=2, silence_threshold=500, audio_window=10):
     """
     Annotate video highlighting only the speaking face using audio analysis
+    MODIFIED: Speaking person gets green thick border, others get light gray or hidden
     
     Args:
         input_video: Input video path
@@ -508,7 +507,7 @@ def annotate_speaking_face_with_enhanced_detection(input_video, output_video, ce
     # Open input video
     cap = cv2.VideoCapture(input_video)
     if not cap.isOpened():
-        raise ValueError(f"Could not open input video: {input_video}")
+        raise ValueError(f"Could not open video file: {input_video}")
     
     # Get video properties
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -542,6 +541,11 @@ def annotate_speaking_face_with_enhanced_detection(input_video, output_video, ce
             
             # Dictionary to store face tracking histories
             frame_histories = {}
+            
+            # Tracking variables for stable detection
+            speaking_face_counter = {}  # Count consecutive frames a face is speaking
+            stable_speaking_face_idx = -1
+            consecutive_frames_threshold = 3  # Number of consecutive frames to confirm speaking
             
             # Process video frames
             print(f"Processing video with {total_frames} frames...")
@@ -622,57 +626,125 @@ def annotate_speaking_face_with_enhanced_detection(input_video, output_video, ce
                                 max_energy = avg_energy
                                 speaking_face_id = face_id
                 
-                # Annotate frame
-                for face in faces:
-                    x1, y1, x2, y2 = face['bbox']
-                    match_idx = face['match_idx']
-                    similarity = face['similarity']
-                    face_id = face['face_id']
-                    
-                    # Determine if this is the speaking face
-                    is_this_speaking = (face_id == speaking_face_id)
-                    
-                    if match_idx >= 0:
-                        # Choose color based on speaking status
-                        if is_this_speaking:
-                            # Speaking face - green box
-                            color = (0, 255, 0)
-                            line_thickness = 3
+                # Update speaking face tracking
+                if speaking_face_id:
+                    for i, face in enumerate(faces):
+                        if face['face_id'] == speaking_face_id:
+                            speaking_face_counter[i] = speaking_face_counter.get(i, 0) + 1
                         else:
-                            # Non-speaking face - yellow box
-                            color = (0, 165, 255)
-                            line_thickness = 1
-                        
-                        # Draw bounding box
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, line_thickness)
-                        
-                        # Display identity and speaking status
-                        if is_this_speaking:
-                            label = f"ID: {match_idx} (Speaking)"
-                        else:
-                            label = f"ID: {match_idx}"
-                        
-                        # Background for text
-                        text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                        cv2.rectangle(frame, 
-                                     (x1, y1 - text_size[1] - 10), 
-                                     (x1 + text_size[0], y1),
-                                     color, -1)  # Filled rectangle
-                        
-                        # Text
-                        cv2.putText(frame, label, (x1, y1 - 5),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                    else:
-                        # Unmatched face - red box with thinner line
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                            speaking_face_counter[i] = 0
+                    
+                    # Check if any face has been speaking for consecutive frames
+                    stable_speaking_face_idx = -1
+                    for idx, count in speaking_face_counter.items():
+                        if count >= consecutive_frames_threshold and idx < len(faces):
+                            stable_speaking_face_idx = idx
+                            break
+                else:
+                    # No speaking detected, reset counters
+                    speaking_face_counter = {}
+                    stable_speaking_face_idx = -1
                 
-                # Add frame counter and audio energy
+                # ============================================================================
+                # MODIFIED ANNOTATION SECTION - Enhanced Speaking Face Visualization
+                # ============================================================================
+                
+                if faces:
+                    for i, face in enumerate(faces):
+                        x1, y1, x2, y2 = face['bbox']
+                        match_idx = face['match_idx']
+                        similarity = face['similarity']
+                        
+                        if i == stable_speaking_face_idx:
+                            # SPEAKING PERSON - Green thick border with large text
+                            if match_idx >= 0:
+                                # Thick green border for speaking person
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 4)  # Green, thick=4
+                                
+                                # Large text for speaking person
+                                label = f"ID: {match_idx} (SPEAKING)"
+                                font_scale = 0.8  # Larger font
+                                thickness = 3     # Thicker text
+                                
+                                # Calculate text size for background
+                                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+                                
+                                # Draw green background for text
+                                cv2.rectangle(frame, 
+                                             (x1, y1 - text_size[1] - 15), 
+                                             (x1 + text_size[0] + 10, y1 - 5),
+                                             (0, 255, 0), -1)  # Green background
+                                
+                                # Draw white text on green background
+                                cv2.putText(frame, label, (x1 + 5, y1 - 10),
+                                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+                                
+                                # Additional speaking indicator (emoji-like)
+                                cv2.putText(frame, ">>", (x1 - 25, y1 + 20),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 3)
+                            else:
+                                # Unknown speaking person - still use green but with "Unknown" label
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 4)
+                                
+                                label = "Unknown (SPEAKING)"
+                                font_scale = 0.8
+                                thickness = 3
+                                
+                                text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+                                
+                                # Red background for unknown speaker
+                                cv2.rectangle(frame, 
+                                             (x1, y1 - text_size[1] - 15), 
+                                             (x1 + text_size[0] + 10, y1 - 5),
+                                             (0, 0, 255), -1)  # Red background
+                                
+                                cv2.putText(frame, label, (x1 + 5, y1 - 10),
+                                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+                        
+                        else:
+                            # NON-SPEAKING FACES - Light gray, thin border (or hidden)
+                            if match_idx >= 0:
+                                # Very light gray border for non-speaking identified faces
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (180, 180, 180), 1)  # Light gray, thin=1
+                                
+                                # Small, light text
+                                label = f"ID: {match_idx}"
+                                font_scale = 0.4  # Smaller font
+                                thickness = 1     # Thinner text
+                                
+                                cv2.putText(frame, label, (x1, y1 - 5),
+                                          cv2.FONT_HERSHEY_SIMPLEX, font_scale, (150, 150, 150), thickness)
+                            else:
+                                # Unknown non-speaking faces - very light gray
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (200, 200, 200), 1)
+                                
+                                label = "Unknown"
+                                cv2.putText(frame, label, (x1, y1 - 5),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+                            
+                            # Option: Completely hide non-speaking faces (uncomment below to use)
+                            # pass  # Do nothing - don't draw non-speaking faces
+                
+                # Add frame counter and status information
                 cv2.putText(frame, f"Frame: {frame_count}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 
-                if has_audio_libraries:
-                    cv2.putText(frame, f"Audio Energy: {audio_energy:.1f}", (10, 60),
+                # Add speaking detection status
+                if stable_speaking_face_idx >= 0:
+                    cv2.putText(frame, "SPEAKING DETECTED", (10, 70),
                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                else:
+                    cv2.putText(frame, "NO SPEAKER", (10, 70),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+                
+                # Show audio energy if available
+                if has_audio_libraries:
+                    cv2.putText(frame, f"Audio Energy: {audio_energy:.1f}", (10, 110),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                
+                # ============================================================================
+                # END OF MODIFIED ANNOTATION SECTION
+                # ============================================================================
                 
                 # Write frame to output
                 out.write(frame)
@@ -697,8 +769,125 @@ def annotate_speaking_face_with_enhanced_detection(input_video, output_video, ce
     
     print(f"Video annotation with speaking face detection completed. Output saved to {output_video}")
 
+def annotate_video(input_video, output_video, centers_data_path, model_dir):
+    """
+    Simple video annotation function (original version)
+    
+    Args:
+        input_video: Input video path
+        output_video: Output video path
+        centers_data_path: Path to cluster center data
+        model_dir: FaceNet model directory
+    """
+    # Load centers data
+    centers, center_paths, centers_data = load_centers_data(centers_data_path)
+    
+    # Open input video
+    cap = cv2.VideoCapture(input_video)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open input video: {input_video}")
+    
+    # Get video properties
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Create output video writer
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
+    
+    with tf.Graph().as_default():
+        with tf.Session() as sess:
+            # Create face detector
+            pnet, rnet, onet = create_mtcnn_detector(sess)
+            
+            # Load FaceNet model
+            print("Loading FaceNet model...")
+            model_dir = os.path.expanduser(model_dir)
+            feature_extraction.load_model(sess, model_dir)
+            
+            # Get input and output tensors
+            images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
+            embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
+            phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
+            
+            # Process video frames
+            print(f"Processing video with {total_frames} frames...")
+            frame_count = 0
+            processing_times = []
+            
+            # Dictionary to store face tracking histories
+            frame_histories = {}
+            
+            # For progress tracking
+            pbar = tqdm(total=total_frames)
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                start_time = time.time()
+                
+                # Process every 2 frames to speed up (can be adjusted)
+                if frame_count % 2 == 0:
+                    # Detect and match faces
+                    faces = detect_and_match_faces(
+                        frame, pnet, rnet, onet, sess, 
+                        images_placeholder, embeddings, phase_train_placeholder, 
+                        centers, frame_histories
+                    )
+                    
+                    # Annotate frame
+                    for face in faces:
+                        x1, y1, x2, y2 = face['bbox']
+                        match_idx = face['match_idx']
+                        similarity = face['similarity']
+                        
+                        # Draw bounding box
+                        if match_idx >= 0:
+                            # Matched face - green box
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            
+                            # Display identity information
+                            label = f"ID: {match_idx}, Sim: {similarity:.2f}"
+                            cv2.putText(frame, label, (x1, y1 - 10),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        else:
+                            # Unmatched face - red box
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                            
+                            # Display unknown label
+                            cv2.putText(frame, "Unknown", (x1, y1 - 10),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                
+                # Write frame to output
+                out.write(frame)
+                
+                end_time = time.time()
+                processing_times.append(end_time - start_time)
+                
+                # Update progress
+                frame_count += 1
+                pbar.update(1)
+                
+                # Print processing stats every 50 frames
+                if frame_count % 50 == 0:
+                    avg_time = np.mean(processing_times[-50:])
+                    fps_rate = 1.0 / avg_time if avg_time > 0 else 0
+                    print(f"\nFrame {frame_count}/{total_frames}, Avg. processing time: {avg_time:.3f}s, FPS: {fps_rate:.2f}")
+            
+            pbar.close()
+    
+    # Release resources
+    cap.release()
+    out.release()
+    
+    print(f"Video annotation completed. Output saved to {output_video}")
+
 if __name__ == "__main__":
-    # Configure parameters
+    # Configuration parameters for testing
     input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4"
     output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\enhanced_annotated_video.avi"
     speaking_output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\enhanced_speaking_face_video.avi"
@@ -706,6 +895,7 @@ if __name__ == "__main__":
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run enhanced video annotation
+    print("Creating main annotated video...")
     annotate_video_with_enhanced_detection(
         input_video=input_video,
         output_video=output_video,
@@ -717,6 +907,7 @@ if __name__ == "__main__":
     )
     
     # Run speaking face detection (requires librosa and soundfile)
+    print("\nCreating speaking face video...")
     try:
         annotate_speaking_face_with_enhanced_detection(
             input_video=input_video,
@@ -725,8 +916,11 @@ if __name__ == "__main__":
             model_dir=model_dir,
             detection_interval=2,
             silence_threshold=500,
-            audio_window=10)  
+            audio_window=10
+        )
+        print("Speaking face video created successfully!")
         
     except Exception as e:
         print(f"Error in speaking face detection: {e}")
-        print("Make sure librosa and soundfile are installed for audio processing")
+        print("Make sure librosa and soundfile are installed for audio processing:")
+        print("pip install librosa soundfile")
