@@ -200,14 +200,41 @@ def mild_preprocessing(face_img):
     if face_img is None or face_img.size == 0:
         return face_img
     
-    # Apply mild denoising (removed gamma correction)
+     # -----------------------------
+    # Step 1: Adaptive Contrast Enhancement (CLAHE)
+    # -----------------------------
+    gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+    brightness = np.mean(gray)
+
+    if brightness < 80:        # 太暗 → 強化對比
+        clip_limit = 2.5
+    elif brightness > 180:     # 太亮 → 減弱對比
+        clip_limit = 1.0
+    else:                      # 正常 → 中等對比
+        clip_limit = 1.5
+
+    lab = cv2.cvtColor(face_img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl, a, b))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+
+    # -----------------------------
+    # Step 2: Adaptive Denoising (NL-means)
+    # -----------------------------
+    variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    if variance < 50:   # 模糊 → 減少去雜訊，避免更糊
+        h = 3
+    elif variance > 150: # 很清晰 → 可以強一點去雜訊
+        h = 7
+    else:               # 中等 → 中等強度
+        h = 5
+
     img_denoised = cv2.fastNlMeansDenoisingColored(
-        face_img, 
-        None, 
-        h=5,       # Filter strength (reduced for less smoothing)
-        hColor=5,  # Same value for color components
-        templateWindowSize=7,  # Size of template patch
-        searchWindowSize=21    # Size of search window
+        enhanced, None,
+        h, h, 7, 21
     )
     
     # No further processing to preserve original qualities
