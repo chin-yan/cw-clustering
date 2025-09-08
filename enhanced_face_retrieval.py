@@ -351,7 +351,7 @@ def search_similar_faces_with_temporal(annoy_index, facial_encodings, center_pat
 
 def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max_results=10):
     """
-    Visualize retrieval results with improved layout
+    Visualize retrieval results with improved layout and multi-page summaries
     
     Args:
         retrieval_results: Dictionary of retrieval results
@@ -432,34 +432,177 @@ def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max
         plt.savefig(os.path.join(vis_dir, f'retrieval_center_{idx}.png'), dpi=200)
         plt.close()
     
-    # Create summary visualization showing all centers with matches
+    # Create multi-page summary visualization showing all centers with matches
     if active_centers:
-        print("Creating summary visualization...")
-        fig, axes = plt.subplots(1, len(active_centers), figsize=(4 * len(active_centers), 5))
+        print("Creating multi-page summary visualization...")
         
-        # Handle case of single center
-        if len(active_centers) == 1:
-            axes = [axes]
+        # Configuration for each page
+        centers_per_page = 16  # Maximum centers per page (4x4 grid)
+        max_cols = 4  # Maximum columns per page
         
-        for i, idx in enumerate(active_centers):
-            center_path = center_paths[idx]
-            n_matches = len(retrieval_results[idx])
+        # Calculate number of pages needed
+        total_pages = (len(active_centers) + centers_per_page - 1) // centers_per_page
+        
+        print(f"Creating {total_pages} summary pages for {len(active_centers)} active centers...")
+        
+        # Create each page
+        for page_num in range(total_pages):
+            # Calculate centers for this page
+            start_idx = page_num * centers_per_page
+            end_idx = min(start_idx + centers_per_page, len(active_centers))
+            page_centers = active_centers[start_idx:end_idx]
             
-            try:
-                center_img = plt.imread(center_path)
-                axes[i].imshow(center_img)
-                axes[i].set_title(f'Center {idx}\n{n_matches} matches', fontsize=12)
+            n_centers = len(page_centers)
+            
+            # Calculate optimal grid layout for this page
+            if n_centers <= 4:
+                n_cols = n_centers
+                n_rows = 1
+            elif n_centers <= 8:
+                n_cols = 4
+                n_rows = 2
+            elif n_centers <= 12:
+                n_cols = 4
+                n_rows = 3
+            else:
+                n_cols = 4
+                n_rows = 4
+            
+            # Create figure with reasonable size
+            fig_width = min(16, 4 * n_cols)  # 4 inches per column, max 16
+            fig_height = min(12, 3.5 * n_rows)  # 3.5 inches per row, max 12
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
+            
+            # Handle different subplot configurations
+            if n_centers == 1:
+                axes = [axes]
+            elif n_rows == 1:
+                if n_cols == 1:
+                    axes = [axes]
+                else:
+                    axes = list(axes) if hasattr(axes, '__iter__') else [axes]
+            else:
+                axes = axes.flatten()
+            
+            # Display centers for this page
+            for i, center_idx in enumerate(page_centers):
+                if center_idx >= len(center_paths):
+                    continue
+                    
+                center_path = center_paths[center_idx]
+                n_matches = len(retrieval_results[center_idx])
+                
+                try:
+                    center_img = plt.imread(center_path)
+                    axes[i].imshow(center_img)
+                    axes[i].set_title(f'Center {center_idx}\n{n_matches} matches', fontsize=11, pad=10)
+                    axes[i].axis('off')
+                    
+                    # Add a border to make it more visually appealing
+                    for spine in axes[i].spines.values():
+                        spine.set_edgecolor('lightgray')
+                        spine.set_linewidth(1)
+                        
+                except Exception as e:
+                    print(f"Unable to load center image {center_path}: {e}")
+                    # Create a placeholder with text
+                    axes[i].text(0.5, 0.5, f'Center {center_idx}\n{n_matches} matches\n(Image Error)', 
+                               transform=axes[i].transAxes, ha='center', va='center', 
+                               fontsize=10, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+                    axes[i].axis('off')
+            
+            # Hide unused subplots
+            for i in range(len(page_centers), len(axes)):
                 axes[i].axis('off')
+                axes[i].set_visible(False)
+            
+            # Create page title
+            if total_pages == 1:
+                page_title = f'Active Centers Summary ({len(active_centers)} centers found matches)'
+            else:
+                page_title = f'Active Centers Summary - Page {page_num + 1}/{total_pages}\n({len(page_centers)} centers on this page, {len(active_centers)} total)'
+            
+            plt.suptitle(page_title, fontsize=14, y=0.95)
+            plt.tight_layout()
+            plt.subplots_adjust(top=0.88)
+            
+            # Determine filename
+            if total_pages == 1:
+                filename = 'active_centers_summary.png'
+            else:
+                filename = f'active_centers_summary_page_{page_num + 1:02d}_of_{total_pages:02d}.png'
+            
+            # Save with error handling
+            try:
+                save_path = os.path.join(vis_dir, filename)
+                plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+                print(f"✅ Saved: {filename}")
             except Exception as e:
-                print(f"Unable to load center image {center_path}: {e}")
+                print(f"⚠️ Failed to save {filename} with DPI 200: {e}")
+                print("Trying with lower DPI...")
+                try:
+                    plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+                    print(f"✅ Saved: {filename} (DPI 150)")
+                except Exception as e2:
+                    print(f"⚠️ Failed to save {filename} with DPI 150: {e2}")
+                    print("Trying with DPI 100...")
+                    try:
+                        plt.savefig(save_path, dpi=100, bbox_inches='tight', facecolor='white')
+                        print(f"✅ Saved: {filename} (DPI 100)")
+                    except Exception as e3:
+                        print(f"❌ Failed to save {filename} even with DPI 100: {e3}")
+            
+            plt.close()
         
-        plt.suptitle('Active Centers (Found Matches)', fontsize=16)
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.85)
-        
-        # Save summary
-        plt.savefig(os.path.join(vis_dir, 'active_centers_summary.png'), dpi=200)
-        plt.close()
+        # Create an index file listing all summary pages
+        if total_pages > 1:
+            print("Creating summary index...")
+            
+            index_content = f"""# Active Centers Summary Index
+
+Total active centers: {len(active_centers)}
+Total summary pages: {total_pages}
+Centers per page: up to {centers_per_page}
+
+## Summary Pages:
+"""
+            
+            for page_num in range(total_pages):
+                start_idx = page_num * centers_per_page
+                end_idx = min(start_idx + centers_per_page, len(active_centers))
+                page_centers = active_centers[start_idx:end_idx]
+                
+                filename = f'active_centers_summary_page_{page_num + 1:02d}_of_{total_pages:02d}.png'
+                index_content += f"\n### Page {page_num + 1}: {filename}\n"
+                index_content += f"Centers: {', '.join(map(str, page_centers))}\n"
+                index_content += f"Count: {len(page_centers)} centers\n"
+            
+            # Add statistics
+            index_content += f"\n## Statistics:\n"
+            index_content += f"- Total matches found: {sum(len(retrieval_results[idx]) for idx in active_centers)}\n"
+            index_content += f"- Average matches per center: {sum(len(retrieval_results[idx]) for idx in active_centers) / len(active_centers):.1f}\n"
+            
+            # Top centers by number of matches
+            top_centers = sorted(active_centers, key=lambda x: len(retrieval_results[x]), reverse=True)[:5]
+            index_content += f"- Top 5 centers by matches: {', '.join(f'Center {idx} ({len(retrieval_results[idx])} matches)' for idx in top_centers)}\n"
+            
+            # Save index file
+            index_path = os.path.join(vis_dir, 'summary_index.md')
+            with open(index_path, 'w', encoding='utf-8') as f:
+                f.write(index_content)
+            
+            print(f"✅ Summary index saved: {index_path}")
+    
+    print(f"✅ Visualization completed. Results saved in: {vis_dir}")
+    
+    # Print final summary
+    if active_centers:
+        total_matches = sum(len(retrieval_results[idx]) for idx in active_centers)
+        print(f"📊 Summary: {len(active_centers)} active centers, {total_matches} total matches")
+        if len(active_centers) > 16:
+            pages_created = (len(active_centers) + 15) // 16
+            print(f"📄 Created {pages_created} summary pages to display all centers")
 
 def visualize_frame_results(frame_results, center_paths, output_dir):
     """

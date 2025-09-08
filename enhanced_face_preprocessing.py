@@ -207,11 +207,11 @@ def mild_preprocessing(face_img):
     brightness = np.mean(gray)
 
     if brightness < 80:        # 太暗 → 強化對比
-        clip_limit = 2.5
+        clip_limit = 1.8
     elif brightness > 180:     # 太亮 → 減弱對比
         clip_limit = 1.0
     else:                      # 正常 → 中等對比
-        clip_limit = 1.5
+        clip_limit = 1.2
 
     lab = cv2.cvtColor(face_img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
