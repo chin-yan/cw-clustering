@@ -81,110 +81,86 @@ def create_mtcnn_detector(sess):
 
 def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder, 
                          embeddings, phase_train_placeholder, centers, 
-                         frame_histories, min_face_size=20, temporal_weight=0.3):
+                         frame_histories, min_face_size=60, temporal_weight=0.3):
     """
-    Detect faces in a frame and match them with cluster centers using temporal consistency
-    
-    Args:
-        frame: Input video frame
-        pnet, rnet, onet: MTCNN detector components
-        sess: TensorFlow session
-        images_placeholder: Input placeholder for FaceNet
-        embeddings: Output embeddings tensor
-        phase_train_placeholder: Phase train placeholder
-        centers: Cluster center encodings
-        frame_histories: Face tracking histories
-        min_face_size: Minimum face size for detection
-        temporal_weight: Weight for temporal consistency
-        
-    Returns:
-        List of detected faces with bounding boxes and matched center indices
+    使用與聚類階段相同的前景人臉檢測邏輯
     """
-    import facenet.src.align.detect_face as detect_face
+    from enhanced_face_preprocessing import detect_foreground_faces_in_frame
     
-    # Convert frame to RGB (MTCNN uses RGB)
-    if frame.shape[2] == 3:
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    else:
-        frame_rgb = frame
+    # 🔥 使用統一的檢測參數（與聚類階段完全一致）
+    min_face_area_ratio = 0.008  # 人臉面積至少佔影像的 0.8%
+    max_faces_per_frame = 5      # 每幀最多保留 5 個人臉
     
-    # Detect faces with two passes (first for frontal, then for side faces)
-    # First pass with standard parameters
-    bounding_boxes, _ = detect_face.detect_face(
-        frame_rgb, min_face_size, pnet, rnet, onet, [0.6, 0.7, 0.7], 0.7
+    # 🔥 使用統一的前景人臉檢測函數
+    filtered_bboxes = detect_foreground_faces_in_frame(
+        frame, pnet, rnet, onet,
+        min_face_size=min_face_size,
+        min_face_area_ratio=min_face_area_ratio,
+        max_faces_per_frame=max_faces_per_frame
     )
     
-    # Second pass with lower thresholds for side faces if no faces found in first pass
-    if len(bounding_boxes) == 0:
-        bounding_boxes, _ = detect_face.detect_face(
-            frame_rgb, min_face_size, pnet, rnet, onet, [0.5, 0.6, 0.6], 0.6
-        )
+    # 如果沒有檢測到前景人臉，直接返回空列表
+    if not filtered_bboxes:
+        return []
     
     faces = []
-    
-    # Preprocess faces and compute embeddings in batch for efficiency
     face_crops = []
     face_bboxes = []
     
-    # Process each detected face
-    for bbox in bounding_boxes:
-        bbox = bbox.astype(np.int)
-        
-        # Calculate margin adaptively based on face size
+    # 處理篩選後的人臉
+    for bbox in filtered_bboxes:
+        # 計算自適應邊距（與聚類階段一致）
         bbox_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
-        margin = int(bbox_size * 0.2)  # 20% margin
+        margin = int(bbox_size * 0.2)  # 20% 邊距
         
-        # Extract face area with margin
         x1 = max(0, bbox[0] - margin)
         y1 = max(0, bbox[1] - margin)
         x2 = min(frame.shape[1], bbox[2] + margin)
         y2 = min(frame.shape[0], bbox[3] + margin)
         
+        # 轉換為RGB（FaceNet需要）
+        if frame.shape[2] == 3:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = frame
+            
         face = frame_rgb[y1:y2, x1:x2, :]
         
-        # Skip invalid faces
         if face.size == 0 or face.shape[0] == 0 or face.shape[1] == 0:
             continue
             
-        # Resize to FaceNet input size
+        # 調整大小到 FaceNet 輸入尺寸
         face_resized = cv2.resize(face, (160, 160))
         
-        # Preprocess for FaceNet
+        # FaceNet 預處理
         face_prewhitened = facenet.prewhiten(face_resized)
         
-        # Add to batch
         face_crops.append(face_prewhitened)
         face_bboxes.append((x1, y1, x2, y2))
     
-    # If no valid faces, return empty list
+    # 如果沒有有效的人臉，返回空列表
     if not face_crops:
         return []
     
-    # Convert to batch
+    # 批次計算人臉編碼
     face_batch = np.stack(face_crops)
-    
-    # Get face encodings in batch
     feed_dict = {images_placeholder: face_batch, phase_train_placeholder: False}
     face_encodings = sess.run(embeddings, feed_dict=feed_dict)
     
-    # Match each face with centers
+    # 匹配每個人臉與聚類中心
     for i, (bbox, encoding) in enumerate(zip(face_bboxes, face_encodings)):
-        # Generate a face ID based on position (simple tracking)
         x1, y1, x2, y2 = bbox
-        face_id = f"{(x1 + x2) // 2}_{(y1 + y2) // 2}"  # Center position as ID
+        face_id = f"{(x1 + x2) // 2}_{(y1 + y2) // 2}"  # 基於位置的 ID
         
-        # Get current match
+        # 獲取當前匹配
         match_idx, similarity, all_similarities = match_face_with_centers(encoding, centers)
         
-        # Apply temporal consistency if this face has history
+        # 🔥 時序一致性處理（保持原有邏輯）
         if face_id in frame_histories:
             history = frame_histories[face_id]
             
-            # Apply temporal consistency only if current match is somewhat similar
-            if similarity > 0.4:  # Lower threshold for applying temporal boost
-                # Get history match
+            if similarity > 0.4:  # 應用時序提升的閾值
                 if len(history) > 0:
-                    # Check if there's a consistent match in history
                     hist_counts = {}
                     hist_sims = {}
                     
@@ -197,7 +173,6 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
                             hist_counts[hist_match] += 1
                             hist_sims[hist_match] += hist_sim
                     
-                    # Find most frequent match in history
                     most_freq_match = -1
                     most_freq_count = 0
                     
@@ -206,37 +181,30 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
                             most_freq_count = count
                             most_freq_match = hist_match
                     
-                    # If there's a consistent match and it's in top matches
                     if most_freq_match >= 0 and most_freq_count >= 2:
                         hist_avg_sim = hist_sims[most_freq_match] / hist_counts[most_freq_match]
                         
-                        # If current match is different than history match
                         if match_idx != most_freq_match:
-                            # Check if history match is close in similarity to current best match
                             current_sim = similarity
                             hist_match_current_sim = all_similarities[most_freq_match]
                             
-                            # If history match is close enough to current match
                             if hist_match_current_sim > current_sim * 0.8:
-                                # Apply temporal consistency - weighted combination
                                 adjusted_sim = (1 - temporal_weight) * hist_match_current_sim + temporal_weight * hist_avg_sim
                                 
-                                # If adjusted similarity is better than current match
                                 if adjusted_sim > current_sim:
                                     match_idx = most_freq_match
                                     similarity = adjusted_sim
         
-        # Update history for this face
+        # 更新歷史記錄
         if face_id not in frame_histories:
-            frame_histories[face_id] = deque(maxlen=10)  # Keep history of last 10 frames
+            frame_histories[face_id] = deque(maxlen=10)
         
         frame_histories[face_id].append((match_idx, similarity))
         
-        # Store face info
+        # 計算人臉品質
         face_width = x2 - x1
         face_height = y2 - y1
         
-        # Calculate face quality (used for visualization)
         face_quality = 0.5
         try:
             gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
@@ -345,24 +313,23 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                 
                 start_time = time.time()
                 
-                # Process every N frames for detection
                 if frame_count % detection_interval == 0:
-                    # Detect and match faces
                     faces = detect_and_match_faces(
                         frame, pnet, rnet, onet, sess, 
                         images_placeholder, embeddings, phase_train_placeholder, 
                         centers, frame_histories, 
-                        min_face_size=20, temporal_weight=temporal_weight
+                        min_face_size=60,  # 🔥 與聚類階段一致
+                        temporal_weight=temporal_weight
                     )
                     
-                    # Update cache
                     cached_faces = faces
-                    
-                    # Add after processing each frame
                     frame_detection_results[frame_count] = faces
+                    
+                    # 🔥 調試輸出
+                    if frame_count % 100 == 0 and faces:
+                        print(f"Frame {frame_count}: 檢測到 {len(faces)} 個前景人臉")
+                        
                 else:
-                    # Use cached faces with adjusted bounding boxes (simple tracking)
-                    # In real applications, a proper tracking algorithm would be used
                     faces = cached_faces
                 
                 # Annotate frame

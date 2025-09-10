@@ -8,135 +8,64 @@ from tqdm import tqdm
 import math
 import facenet.src.align.detect_face as detect_face
 
-def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=20, face_size=160,
+def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=60, face_size=160,
                          margin=44, detect_multiple_faces=True):
     """
-    Adjusted face detection and preprocessing with more conservative enhancement
-    to avoid quality degradation while still improving side face detection
-    
-    Args:
-        sess: TensorFlow session
-        frame_paths: frame path list
-        output_dir: The directory where the detected faces are saved
-        min_face_size: minimum face size
-        face_size: The size of the output face image
-        margin: Margin for the crop around the bounding box (in pixels)
-        detect_multiple_faces: If true, detect multiple faces in an image
-        
-    Returns:
-        Path list of detected face images
+    使用統一的前景人臉檢測邏輯
     """
-    print("Creating MTCNN network for adjusted face detection...")
+    print("Creating MTCNN network for foreground-focused face detection...")
     pnet, rnet, onet = create_mtcnn(sess, None)
     
-    # Parameters for better side face detection - less aggressive than before
-    threshold = [0.6, 0.7, 0.8]  # Default is [0.6, 0.7, 0.7] - minor adjustment
+    # 🔥 統一的檢測參數
+    min_face_area_ratio = 0.008  # 人臉面積至少佔影像的 0.8%
+    max_faces_per_frame = 5      # 每幀最多保留 5 個人臉
     
     face_paths = []
     face_count = 0
     
-    print("Detecting faces from frames with adjusted preprocessing...")
+    print("Detecting foreground faces from frames...")
     for frame_path in tqdm(frame_paths):
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
 
-        # Keep a copy of the original frame for face extraction
         original_frame = frame.copy()
         
-        # Convert to RGB for detection (keep original colors for extraction)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Apply mild contrast enhancement to help with detection
-        frame_rgb = mild_contrast_enhancement(frame_rgb)
-        
-        # Main face detection
-        bounding_boxes, _ = detect_face.detect_face(
-            frame_rgb, min_face_size, pnet, rnet, onet, threshold, 0.709
+        # 🔥 使用統一的檢測函數
+        filtered_bboxes = detect_foreground_faces_in_frame(
+            frame, pnet, rnet, onet, 
+            min_face_size=min_face_size,
+            min_face_area_ratio=min_face_area_ratio,
+            max_faces_per_frame=max_faces_per_frame
         )
         
-        for i, bbox in enumerate(bounding_boxes):
-            bbox = bbox.astype(np.int)
-            
-            # Calculate margin for better face crop
+        # 處理篩選後的人臉
+        for i, bbox in enumerate(filtered_bboxes):
             bbox_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
             adaptive_margin = int(margin * bbox_size / 160)
             
-            # Increase the bounding box size to include more facial features
             x1 = max(0, bbox[0] - adaptive_margin)
             y1 = max(0, bbox[1] - adaptive_margin)
             x2 = min(original_frame.shape[1], bbox[2] + adaptive_margin)
             y2 = min(original_frame.shape[0], bbox[3] + adaptive_margin)
             
-            # Extract face from the original frame to preserve quality
             face = original_frame[y1:y2, x1:x2, :]
             
-            # Checking the validity of face images
             if face.size == 0 or face.shape[0] == 0 or face.shape[1] == 0:
                 continue
             
-            # Apply mild preprocessing - more conservative than before
             face = mild_preprocessing(face)
-                
-            # Resize to specified size
             face_resized = cv2.resize(face, (face_size, face_size))
             
-            # Generate output path
             frame_name = os.path.basename(frame_path)
-            face_name = f"{os.path.splitext(frame_name)[0]}_face_{i}.jpg"
+            face_name = f"{os.path.splitext(frame_name)[0]}_mainface_{i}.jpg"
             face_path = os.path.join(output_dir, face_name)
             
-            # Save face
             cv2.imwrite(face_path, face_resized)
             face_paths.append(face_path)
             face_count += 1
-        
-        # If no faces detected with standard settings, try a second pass with different parameters
-        # but only if no faces were found in the first pass
-        if len(bounding_boxes) == 0:
-            # Secondary detection with parameters more suitable for side faces
-            side_threshold = [0.5, 0.6, 0.7]  # Lower thresholds for side faces
-            side_bounding_boxes, _ = detect_face.detect_face(
-                frame_rgb, min_face_size * 0.8, pnet, rnet, onet, side_threshold, 0.6
-            )
-            
-            for i, bbox in enumerate(side_bounding_boxes):
-                bbox = bbox.astype(np.int)
-                
-                # Calculate margin
-                bbox_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
-                adaptive_margin = int(margin * bbox_size / 160)
-                
-                # Increase the bounding box size
-                x1 = max(0, bbox[0] - adaptive_margin)
-                y1 = max(0, bbox[1] - adaptive_margin)
-                x2 = min(original_frame.shape[1], bbox[2] + adaptive_margin)
-                y2 = min(original_frame.shape[0], bbox[3] + adaptive_margin)
-                
-                # Extract face from original frame
-                face = original_frame[y1:y2, x1:x2, :]
-                
-                # Check validity
-                if face.size == 0 or face.shape[0] == 0 or face.shape[1] == 0:
-                    continue
-                
-                # Apply mild preprocessing
-                face = mild_preprocessing(face)
-                    
-                # Resize
-                face_resized = cv2.resize(face, (face_size, face_size))
-                
-                # Generate output path
-                frame_name = os.path.basename(frame_path)
-                face_name = f"{os.path.splitext(frame_name)[0]}_sideface_{i}.jpg"
-                face_path = os.path.join(output_dir, face_name)
-                
-                # Save face
-                cv2.imwrite(face_path, face_resized)
-                face_paths.append(face_path)
-                face_count += 1
     
-    print(f"A total of {face_count} faces were detected with adjusted preprocessing")
+    print(f"A total of {face_count} main character faces were detected")
     return face_paths
 
 def create_mtcnn(sess, model_path):
@@ -207,11 +136,11 @@ def mild_preprocessing(face_img):
     brightness = np.mean(gray)
 
     if brightness < 80:        # 太暗 → 強化對比
-        clip_limit = 1.8
-    elif brightness > 180:     # 太亮 → 減弱對比
-        clip_limit = 1.0
-    else:                      # 正常 → 中等對比
         clip_limit = 1.2
+    elif brightness > 180:     # 太亮 → 減弱對比
+        clip_limit = 0.6
+    else:                      # 正常 → 中等對比
+        clip_limit = 0.8
 
     lab = cv2.cvtColor(face_img, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -239,3 +168,80 @@ def mild_preprocessing(face_img):
     
     # No further processing to preserve original qualities
     return img_denoised
+
+def detect_foreground_faces_in_frame(frame, pnet, rnet, onet, min_face_size=60, 
+                                    min_face_area_ratio=0.008, max_faces_per_frame=5):
+    """
+    統一的前景人臉檢測邏輯，聚類和標註階段共用
+    
+    Args:
+        frame: 輸入影像 (BGR format)
+        pnet, rnet, onet: MTCNN 檢測器組件
+        min_face_size: 最小人臉尺寸
+        min_face_area_ratio: 人臉面積佔影像面積的最小比例
+        max_faces_per_frame: 每幀最多保留的人臉數量
+        
+    Returns:
+        filtered_bboxes: 篩選後的人臉邊界框列表
+    """
+    import facenet.src.align.detect_face as detect_face
+    
+    # 轉換為 RGB
+    if len(frame.shape) == 3 and frame.shape[2] == 3:
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    else:
+        frame_rgb = frame
+    
+    # 計算影像面積
+    frame_area = frame.shape[0] * frame.shape[1]
+    
+    # 應用輕度對比增強（與聚類階段一致）
+    frame_rgb = mild_contrast_enhancement(frame_rgb)
+    
+    # 🔥 使用與聚類階段相同的檢測參數
+    threshold = [0.7, 0.8, 0.8]  # 更嚴格的閾值
+    
+    # 主要檢測
+    bounding_boxes, _ = detect_face.detect_face(
+        frame_rgb, min_face_size, pnet, rnet, onet, threshold, 0.709
+    )
+    
+    # 如果沒有檢測到，使用較低閾值再試一次（與聚類階段一致）
+    if len(bounding_boxes) == 0:
+        side_threshold = [0.5, 0.6, 0.7]
+        bounding_boxes, _ = detect_face.detect_face(
+            frame_rgb, min_face_size * 0.8, pnet, rnet, onet, side_threshold, 0.6
+        )
+    
+    # 篩選和排序人臉（與聚類階段完全一致）
+    valid_faces = []
+    for i, bbox in enumerate(bounding_boxes):
+        bbox = bbox.astype(np.int)
+        
+        # 計算人臉面積
+        face_width = bbox[2] - bbox[0]
+        face_height = bbox[3] - bbox[1]
+        face_area = face_width * face_height
+        face_area_ratio = face_area / frame_area
+        
+        # 過濾太小的人臉
+        if face_area_ratio >= min_face_area_ratio:
+            valid_faces.append({
+                'bbox': bbox,
+                'area': face_area,
+                'area_ratio': face_area_ratio,
+                'index': i
+            })
+    
+    # 按面積排序，保留最大的幾個
+    valid_faces.sort(key=lambda x: x['area'], reverse=True)
+    valid_faces = valid_faces[:max_faces_per_frame]
+    
+    # 返回篩選後的邊界框
+    filtered_bboxes = [face_info['bbox'] for face_info in valid_faces]
+    
+    # 調試信息
+    if len(bounding_boxes) > len(filtered_bboxes):
+        print(f"人臉篩選: {len(bounding_boxes)} → {len(filtered_bboxes)} (保留前景主要人物)")
+    
+    return filtered_bboxes

@@ -87,14 +87,16 @@ def compute_face_quality(face_path):
     face_size_score = min(1.0, face_area / (160.0 * 160.0))
     
     # Combine metrics (adjusted weights - less emphasis on sharpness)
-    quality_score = 0.35 * sharpness + 0.35 * contrast + 0.3 * face_size_score
+    #quality_score = 0.35 * sharpness + 0.35 * contrast + 0.3 * face_size_score
+    quality_score = 0.5 * sharpness + 0.2 * contrast + 0.3 * face_size_score
     
     # Make overall scoring more permissive
-    quality_score = min(1.0, quality_score * 1.2)  # Boost scores by 20%
-    
+    #quality_score = min(1.0, quality_score * 1.2)  # Boost scores by 20%
+    quality_score = min(1.0, quality_score * 1.1)
+
     return quality_score
 
-def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, temporal_weight=0.25):
+def cluster_facial_encodings(facial_encodings, threshold=0.5, iterations=30, temporal_weight=0.35):
     """
     Improved clustering for face encoding using Chinese Whispers algorithm
     with temporal analysis but more balanced parameters to avoid over-clustering
@@ -139,8 +141,8 @@ def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, te
     
     return final_clusters
 
-def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, threshold=0.55, 
-                              iterations=30, temporal_weight=0.25):
+def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, threshold=0.5, 
+                              iterations=30, temporal_weight=0.35):
     """
     Adjusted implementation of Chinese Whispers Clustering Algorithm
     with better balance between facial similarity and temporal continuity

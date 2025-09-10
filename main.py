@@ -360,10 +360,10 @@ def parse_arguments():
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=100, help='Batch size for feature extraction')
     parser.add_argument('--face_size', type=int, default=160, help='Face image size')
-    parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
+    parser.add_argument('--cluster_threshold', type=float, default=0.5, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
     parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
-    parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
+    parser.add_argument('--temporal_weight', type=float, default=0.35, help='Temporal continuity weight')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -427,7 +427,7 @@ def main():
             if args.method in ['adjusted', 'hybrid']:
                 face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
                     sess, frames_paths, dirs['faces'], 
-                    min_face_size=20, face_size=args.face_size
+                    min_face_size=60, face_size=args.face_size
                 )
             else:
                 face_paths = face_detection.detect_faces_in_frames(
@@ -494,7 +494,31 @@ def main():
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-            # Step 4: Save clustering results
+             # Step 4: 後處理 - 智能合併oversplit clusters
+            print("\n🔧 Step 4: Post-processing clusters...")
+            
+            # Import post-processing module
+            import cluster_post_processing
+            
+            # Apply post-processing to merge oversplit clusters
+            processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
+                clusters, facial_encodings,
+                target_clusters=[2],  # 專門針對cluster 2
+                merge_threshold=0.45,  # 合併閾值
+                max_merges_per_cluster=6  # 允許cluster 2最多合併6個小clusters
+            )
+            
+            # 更新clusters為處理後的結果
+            clusters = processed_clusters
+            
+            print(f"✅ Post-processing completed:")
+            print(f"   Merge actions: {len(merge_actions)}")
+            for action in merge_actions:
+                print(f"   Cluster {action['child']} merged into {action['parent']} "
+                      f"(+{action['faces_added']} faces, sim: {action['similarity']:.3f})")
+
+
+            # Step 5: Save clustering results
             print(f"\n💾 Saving {len(clusters)} clusters...")
             for idx, cluster in enumerate(clusters):
                 cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
@@ -505,8 +529,8 @@ def main():
                     dst_path = os.path.join(cluster_dir, face_name)
                     shutil.copy2(face_path, dst_path)
 
-            # Step 5: Calculate cluster centers
-            print("\n🎯 Step 4: Calculating cluster centers...")
+            # Step 6: Calculate cluster centers
+            print("\n🎯 Step 5: Calculating cluster centers...")
             if args.method in ['adjusted', 'hybrid']:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
                     clusters, facial_encodings, method='min_distance'
