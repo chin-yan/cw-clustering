@@ -22,7 +22,6 @@ class ConfusionMatrixAnalyzer:
         """
         self.excel_file_path = excel_file_path
         
-        # 直接寫死輸出目錄路徑 - 這裡是寫死的地方！
         self.output_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering"
             
         self.confusion_matrix = None
@@ -220,7 +219,6 @@ class ConfusionMatrixAnalyzer:
         plt.yticks(rotation=0)
         plt.tight_layout()
         
-        # 保存圖片到寫死的路徑
         save_path = self.get_output_path("confusion_matrix_heatmap.png")
         try:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -282,7 +280,6 @@ class ConfusionMatrixAnalyzer:
         
         plt.tight_layout()
         
-        # 保存圖片到寫死的路徑
         save_path = self.get_output_path("class_performance.png")
         try:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -335,7 +332,6 @@ class ConfusionMatrixAnalyzer:
         
         plt.tight_layout()
         
-        # 保存圖片到寫死的路徑
         save_path = self.get_output_path("error_analysis.png")
         try:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -381,7 +377,6 @@ class ConfusionMatrixAnalyzer:
         
         report_df = pd.DataFrame(report_data)
         
-        # 自動保存到CSV檔案（寫死的路徑）
         csv_path = self.get_output_path("detailed_classification_report.csv")
         try:
             report_df.to_csv(csv_path, index=False, encoding='utf-8-sig')
@@ -393,33 +388,32 @@ class ConfusionMatrixAnalyzer:
 
 # 使用範例
 if __name__ == "__main__":
-    # 簡單初始化，路徑已經寫死在class中
-    analyzer = ConfusionMatrixAnalyzer('confusion_matrix_s1ep1.xlsx')
+    analyzer = ConfusionMatrixAnalyzer(r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\confusion_matrix_s1ep1_2.0.xlsx")
     
     print("="*80)
     print("開始進行 Confusion Matrix 分析...")
     print("="*80)
     
-    # 打印評估指標摘要（會自動保存到寫死的路徑）
+    # 打印評估指標摘要
     analyzer.print_metrics_summary()
     
     print("\n" + "="*60)
     print("生成可視化圖表...")
     print("="*60)
     
-    # 1. Confusion Matrix 熱力圖（會自動保存到寫死的路徑）
+    # 1. Confusion Matrix 熱力圖
     print("\n1. 生成 Confusion Matrix 熱力圖...")
     analyzer.plot_confusion_matrix_heatmap(figsize=(15, 12))
     
-    # 2. 各類別性能圖（會自動保存到寫死的路徑）
+    # 2. 各類別性能圖
     print("\n2. 生成各類別性能圖...")
     analyzer.plot_class_performance(figsize=(15, 10))
     
-    # 3. 錯誤分析圖（會自動保存到寫死的路徑）
+    # 3. 錯誤分析圖
     print("\n3. 生成錯誤分析圖...")
     analyzer.plot_error_analysis(figsize=(12, 8))
     
-    # 4. 生成詳細報告並保存到CSV（會自動保存到寫死的路徑）
+    # 4. 生成詳細報告並保存到CSV
     print("\n4. 生成詳細分類報告...")
     detailed_report = analyzer.generate_detailed_report()
     print("\n詳細分類報告:")
@@ -428,7 +422,7 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("分析完成！")
     print("="*80)
-    print(f"所有檔案已保存至寫死的目錄: {analyzer.output_dir}")
+    print(f"所有檔案已保存至目錄: {analyzer.output_dir}")
     print("生成的檔案包括:")
     print(f"- {analyzer.timestamp}_metrics_summary.txt (評估指標摘要)")
     print(f"- {analyzer.timestamp}_confusion_matrix_heatmap.png (混淆矩陣熱力圖)")
