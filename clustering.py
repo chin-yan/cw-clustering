@@ -87,25 +87,45 @@ def compute_face_quality(face_path):
     face_size_score = min(1.0, face_area / (160.0 * 160.0))
     
     # Combine metrics (adjusted weights - less emphasis on sharpness)
-    #quality_score = 0.35 * sharpness + 0.35 * contrast + 0.3 * face_size_score
     quality_score = 0.5 * sharpness + 0.2 * contrast + 0.3 * face_size_score
     
     # Make overall scoring more permissive
-    #quality_score = min(1.0, quality_score * 1.2)  # Boost scores by 20%
     quality_score = min(1.0, quality_score * 1.1)
 
     return quality_score
 
-def cluster_facial_encodings(facial_encodings, threshold=0.5, iterations=30, temporal_weight=0.35):
+def calculate_enhanced_similarity(facial_sim, temporal_sim, temporal_weight):
+    """
+    Calculate enhanced similarity using proportional boost approach
+    Only boosts similarity when temporal information is available, never penalizes
+    
+    Args:
+        facial_sim: Basic facial similarity score (0-1)
+        temporal_sim: Temporal continuity score (0-1)
+        temporal_weight: Weight for temporal enhancement (0-1)
+        
+    Returns:
+        Enhanced similarity score, capped at 1.0
+    """
+    if temporal_sim > 0:
+        # Proportional boost: temporal information increases confidence
+        boost_factor = 1 + (temporal_weight * temporal_sim)
+        enhanced_similarity = facial_sim * boost_factor
+        return min(1.0, enhanced_similarity)  # Ensure it doesn't exceed 1.0
+    else:
+        # No temporal information: use original facial similarity
+        return facial_sim
+
+def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, temporal_weight=0.25):
     """
     Improved clustering for face encoding using Chinese Whispers algorithm
     with temporal analysis but more balanced parameters to avoid over-clustering
     
     Args:
         facial_encodings: mapping of face paths to encodings
-        threshold: face matching threshold, default is 0.65 (stricter than previous)
+        threshold: face matching threshold
         iterations: number of iterations
-        temporal_weight: weight for temporal continuity (reduced from previous)
+        temporal_weight: weight for temporal continuity enhancement
         
     Returns:
         Sorted list of clusters
@@ -116,7 +136,7 @@ def cluster_facial_encodings(facial_encodings, threshold=0.5, iterations=30, tem
         print("Insufficient number of encodings to cluster")
         return []
     
-    print(f"Using adjusted Chinese Whispers algorithm to cluster {len(encoding_list)} faces...")
+    print(f"Using enhanced Chinese Whispers algorithm to cluster {len(encoding_list)} faces...")
     
     # Extract frame information for each face
     frame_info = {}
@@ -130,7 +150,7 @@ def cluster_facial_encodings(facial_encodings, threshold=0.5, iterations=30, tem
         quality_scores[path] = compute_face_quality(path)
     
     # Create graph with enhanced edge weights
-    sorted_clusters = _chinese_whispers_adjusted(
+    sorted_clusters = _chinese_whispers_enhanced(
         encoding_list, frame_info, quality_scores, threshold, iterations, temporal_weight
     )
     
@@ -141,11 +161,11 @@ def cluster_facial_encodings(facial_encodings, threshold=0.5, iterations=30, tem
     
     return final_clusters
 
-def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, threshold=0.5, 
-                              iterations=30, temporal_weight=0.35):
+def _chinese_whispers_enhanced(encoding_list, frame_info, quality_scores, threshold=0.55, 
+                              iterations=30, temporal_weight=0.25):
     """
-    Adjusted implementation of Chinese Whispers Clustering Algorithm
-    with better balance between facial similarity and temporal continuity
+    Enhanced implementation of Chinese Whispers Clustering Algorithm
+    with improved temporal similarity integration that never penalizes faces
     
     Args:
         encoding_list: list of (image path, face encoding) tuples
@@ -153,7 +173,7 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
         quality_scores: dictionary mapping image paths to face quality scores
         threshold: face matching threshold
         iterations: number of iterations
-        temporal_weight: weight for temporal continuity (0-1)
+        temporal_weight: weight for temporal continuity enhancement (0-1)
         
     Returns:
         List of clusters sorted by size
@@ -167,9 +187,9 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
     edges = []
     
     # Maximum frame difference to consider for temporal continuity
-    max_frame_diff = 3  # Reduced from 5 to be more conservative
+    max_frame_diff = 3  # Conservative temporal window
     
-    print("Creating enhanced graph with temporal continuity...")
+    print("Creating enhanced graph with improved temporal continuity...")
     for idx, face_encoding_to_check in enumerate(tqdm(encodings)):
         # Add nodes
         node_id = idx + 1
@@ -186,36 +206,34 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
             
         # Calculate facial similarity with other encodings
         compare_encodings = encodings[idx+1:]
-        distances = face_distance(compare_encodings, face_encoding_to_check)
+        facial_similarities = face_distance(compare_encodings, face_encoding_to_check)
         
         # Get frame info for current face
         curr_frame_num, curr_face_idx = frame_info[image_paths[idx]]
         
-        # Add edges with facial similarity
+        # Add edges with enhanced similarity calculation
         encoding_edges = []
-        for i, distance in enumerate(distances):
+        for i, facial_sim in enumerate(facial_similarities):
             compare_idx = idx + i + 1
             compare_path = image_paths[compare_idx]
             compare_frame_num, compare_face_idx = frame_info[compare_path]
             
-            # Only apply temporal boost if face similarity is already close to threshold
-            if distance >= (threshold * 0.9):  # Only apply temporal boost for faces that are already similar
-                # Calculate temporal similarity - higher weight for faces from close frames
-                temporal_similarity = 0
-                if curr_frame_num > 0 and compare_frame_num > 0:
-                    frame_diff = abs(curr_frame_num - compare_frame_num)
-                    if frame_diff <= max_frame_diff:
-                        temporal_similarity = 1.0 - (frame_diff / max_frame_diff)
-                
-                # Combine facial and temporal similarity
-                combined_similarity = (1 - temporal_weight) * distance + temporal_weight * temporal_similarity
-            else:
-                # For faces that aren't similar enough, don't apply temporal boost
-                combined_similarity = distance
+            # Calculate temporal similarity
+            temporal_similarity = 0
+            if curr_frame_num > 0 and compare_frame_num > 0:
+                frame_diff = abs(curr_frame_num - compare_frame_num)
+                if frame_diff <= max_frame_diff:
+                    temporal_similarity = 1.0 - (frame_diff / max_frame_diff)
             
-            if combined_similarity > threshold:
+            # Use enhanced similarity calculation (proportional boost)
+            enhanced_similarity = calculate_enhanced_similarity(
+                facial_sim, temporal_similarity, temporal_weight
+            )
+            
+            # Create edge if enhanced similarity exceeds threshold
+            if enhanced_similarity > threshold:
                 edge_id = compare_idx + 1
-                encoding_edges.append((node_id, edge_id, {'weight': combined_similarity}))
+                encoding_edges.append((node_id, edge_id, {'weight': enhanced_similarity}))
                 
         edges.extend(encoding_edges)
     
@@ -225,7 +243,7 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
     G.add_edges_from(edges)
     
     # Iterative clustering
-    print(f"Starting adjusted Chinese Whispers iteration ({iterations} times)...")
+    print(f"Starting enhanced Chinese Whispers iteration ({iterations} times)...")
     for _ in tqdm(range(iterations)):
         cluster_nodes = list(G.nodes)
         shuffle(cluster_nodes)
@@ -238,8 +256,8 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
             for ne in neighbors:
                 if isinstance(ne, int):
                     if G.nodes[ne]['cluster'] in clusters:
-                        # Weight by edge weight but reduce influence of quality
-                        weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])  # Less influence of quality
+                        # Weight by edge weight with moderate quality influence
+                        weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])
                         clusters[G.nodes[ne]['cluster']] += weight
                     else:
                         weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])

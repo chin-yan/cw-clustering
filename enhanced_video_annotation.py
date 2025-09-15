@@ -83,15 +83,15 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
                          embeddings, phase_train_placeholder, centers, 
                          frame_histories, min_face_size=60, temporal_weight=0.3):
     """
-    使用與聚類階段相同的前景人臉檢測邏輯
+    Use the same foreground face detection logic as clustering stage
     """
     from enhanced_face_preprocessing import detect_foreground_faces_in_frame
     
-    # 🔥 使用統一的檢測參數（與聚類階段完全一致）
-    min_face_area_ratio = 0.008  # 人臉面積至少佔影像的 0.8%
-    max_faces_per_frame = 5      # 每幀最多保留 5 個人臉
+    # Use unified detection parameters (consistent with clustering stage)
+    min_face_area_ratio = 0.008  # Face area must occupy at least 0.8% of image
+    max_faces_per_frame = 5      # Keep at most 5 faces per frame
     
-    # 🔥 使用統一的前景人臉檢測函數
+    # Use unified foreground face detection function
     filtered_bboxes = detect_foreground_faces_in_frame(
         frame, pnet, rnet, onet,
         min_face_size=min_face_size,
@@ -99,7 +99,7 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         max_faces_per_frame=max_faces_per_frame
     )
     
-    # 如果沒有檢測到前景人臉，直接返回空列表
+    # If no foreground faces detected, return empty list
     if not filtered_bboxes:
         return []
     
@@ -107,18 +107,18 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
     face_crops = []
     face_bboxes = []
     
-    # 處理篩選後的人臉
+    # Process filtered faces
     for bbox in filtered_bboxes:
-        # 計算自適應邊距（與聚類階段一致）
+        # Calculate adaptive margin (consistent with clustering stage)
         bbox_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
-        margin = int(bbox_size * 0.2)  # 20% 邊距
+        margin = int(bbox_size * 0.2)  # 20% margin
         
         x1 = max(0, bbox[0] - margin)
         y1 = max(0, bbox[1] - margin)
         x2 = min(frame.shape[1], bbox[2] + margin)
         y2 = min(frame.shape[0], bbox[3] + margin)
         
-        # 轉換為RGB（FaceNet需要）
+        # Convert to RGB (required by FaceNet)
         if frame.shape[2] == 3:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         else:
@@ -129,37 +129,37 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
         if face.size == 0 or face.shape[0] == 0 or face.shape[1] == 0:
             continue
             
-        # 調整大小到 FaceNet 輸入尺寸
+        # Resize to FaceNet input size
         face_resized = cv2.resize(face, (160, 160))
         
-        # FaceNet 預處理
+        # FaceNet preprocessing
         face_prewhitened = facenet.prewhiten(face_resized)
         
         face_crops.append(face_prewhitened)
         face_bboxes.append((x1, y1, x2, y2))
     
-    # 如果沒有有效的人臉，返回空列表
+    # If no valid faces, return empty list
     if not face_crops:
         return []
     
-    # 批次計算人臉編碼
+    # Batch compute face encodings
     face_batch = np.stack(face_crops)
     feed_dict = {images_placeholder: face_batch, phase_train_placeholder: False}
     face_encodings = sess.run(embeddings, feed_dict=feed_dict)
     
-    # 匹配每個人臉與聚類中心
+    # Match each face with cluster centers
     for i, (bbox, encoding) in enumerate(zip(face_bboxes, face_encodings)):
         x1, y1, x2, y2 = bbox
-        face_id = f"{(x1 + x2) // 2}_{(y1 + y2) // 2}"  # 基於位置的 ID
+        face_id = f"{(x1 + x2) // 2}_{(y1 + y2) // 2}"  # Position-based ID
         
-        # 獲取當前匹配
+        # Get current match
         match_idx, similarity, all_similarities = match_face_with_centers(encoding, centers)
         
-        # 🔥 時序一致性處理（保持原有邏輯）
+        # Temporal consistency processing (keep original logic)
         if face_id in frame_histories:
             history = frame_histories[face_id]
             
-            if similarity > 0.4:  # 應用時序提升的閾值
+            if similarity > 0.4:  # Threshold for applying temporal boost
                 if len(history) > 0:
                     hist_counts = {}
                     hist_sims = {}
@@ -195,13 +195,13 @@ def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder,
                                     match_idx = most_freq_match
                                     similarity = adjusted_sim
         
-        # 更新歷史記錄
+        # Update history
         if face_id not in frame_histories:
             frame_histories[face_id] = deque(maxlen=10)
         
         frame_histories[face_id].append((match_idx, similarity))
         
-        # 計算人臉品質
+        # Calculate face quality
         face_width = x2 - x1
         face_height = y2 - y1
         
@@ -318,16 +318,16 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                         frame, pnet, rnet, onet, sess, 
                         images_placeholder, embeddings, phase_train_placeholder, 
                         centers, frame_histories, 
-                        min_face_size=60,  # 🔥 與聚類階段一致
+                        min_face_size=60,  # Consistent with clustering stage
                         temporal_weight=temporal_weight
                     )
                     
                     cached_faces = faces
                     frame_detection_results[frame_count] = faces
                     
-                    # 🔥 調試輸出
+                    # Debug output
                     if frame_count % 100 == 0 and faces:
-                        print(f"Frame {frame_count}: 檢測到 {len(faces)} 個前景人臉")
+                        print(f"Frame {frame_count}: Detected {len(faces)} foreground faces")
                         
                 else:
                     faces = cached_faces
@@ -414,7 +414,7 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
     with open(detection_results_path, 'wb') as f:
         pickle.dump(frame_detection_results, f)
 
-    print(f"The detection results have been saved to {detection_results_path}")
+    print(f"Detection results saved to {detection_results_path}")
 
 def annotate_speaking_face_with_enhanced_detection(input_video, output_video, centers_data_path, model_dir,
                                                 detection_interval=2, silence_threshold=500, audio_window=10):
