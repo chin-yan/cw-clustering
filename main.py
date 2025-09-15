@@ -183,7 +183,7 @@ def merge_audio_to_video(video_without_audio, video_with_audio, output_video_wit
 
 def create_annotated_video_mp4(input_video, output_video_mp4, centers_data_path, model_dir,
                               detection_interval=2, similarity_threshold=0.55, 
-                              temporal_weight=0.3, preserve_audio=True):
+                              temporal_weight=0.25, preserve_audio=True):
     """
     Create annotated video in MP4 format with optional audio preservation
     
@@ -363,7 +363,7 @@ def parse_arguments():
     parser.add_argument('--cluster_threshold', type=float, default=0.5, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
     parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
-    parser.add_argument('--temporal_weight', type=float, default=0.35, help='Temporal continuity weight')
+    parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -455,7 +455,7 @@ def main():
                 emb_array, args.batch_size, face_paths
             )
             
-            # Step 3: Clustering
+            # Step 3: Clustering - REVERTED TO SINGLE STAGE
             print("\n🎯 Step 3: Clustering faces...")
             if args.method == 'adjusted':
                 clusters = clustering.cluster_facial_encodings(
@@ -475,7 +475,7 @@ def main():
                     temporal_weight=args.temporal_weight
                 )
                 
-                # Choose better result
+                # Choose better result based on cluster distribution
                 original_sizes = [len(c) for c in original_clusters]
                 adjusted_sizes = [len(c) for c in adjusted_clusters]
                 
@@ -490,100 +490,15 @@ def main():
                     print(f"Selected original clustering: {len(original_clusters)} clusters")
                     clusters = original_clusters
             else:
+                # Original method
                 clusters = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-            # Step 4: 智能合併策略 - 調試版本
-            print("\n🔧 Step 4: Intelligent cluster merging - Debug version...")
-
-            import cluster_post_processing
-
-            total_faces = sum(len(cluster) for cluster in clusters)
-            print(f"總計 {total_faces} 個faces，{len(clusters)} 個clusters")
-
-            # 先分析cluster分佈
-            cluster_sizes = [(i, len(cluster)) for i, cluster in enumerate(clusters)]
-            cluster_sizes.sort(key=lambda x: x[1], reverse=True)
-
-            print("\n📊 Cluster分佈分析:")
-            for i, (cluster_idx, size) in enumerate(cluster_sizes[:15]):  # 顯示前15大
-                percentage = (size / total_faces) * 100
-                print(f"   Cluster {cluster_idx}: {size} faces ({percentage:.1f}%)")
-
-            # 手動檢查cluster2和其他疑似相同角色的clusters
-            print("\n🔍 手動檢查cluster相似度:")
-            suspect_clusters = [2]  # 先檢查cluster 2
-            for i, (cluster_idx, size) in enumerate(cluster_sizes[:10]):  # 檢查前10大
-                if cluster_idx != 2 and size > total_faces * 0.02:  # 排除cluster2本身，只看大cluster
-                    suspect_clusters.append(cluster_idx)
-
-            print(f"   疑似相同角色的clusters: {suspect_clusters}")
-
-            # 手動計算相似度
-            if len(suspect_clusters) >= 2:
-                print("\n📏 計算clusters間相似度:")
-                for i in range(len(suspect_clusters)):
-                    for j in range(i+1, len(suspect_clusters)):
-                        idx_i, idx_j = suspect_clusters[i], suspect_clusters[j]
-                        cluster_i, cluster_j = clusters[idx_i], clusters[idx_j]
-                        
-                        # 使用現有函數計算相似度
-                        similarities = cluster_post_processing.calculate_cross_cluster_similarity(
-                            cluster_i, cluster_j, facial_encodings, max_samples=20
-                        )
-                        
-                        print(f"   Cluster {idx_i} vs {idx_j}:")
-                        print(f"      質心相似度: {similarities['centroid']:.3f}")
-                        print(f"      最高配對: {similarities['max_pairwise']:.3f}")
-                        print(f"      平均配對: {similarities['avg_pairwise']:.3f}")
-                        print(f"      高相似度比例: {similarities['high_similarity_ratio']:.3f}")
-
-            # 使用更寬鬆的閾值重新嘗試
-            print("\n🔧 使用調整後的閾值重新合併...")
-            processed_clusters, all_merge_actions = cluster_post_processing.post_process_clusters(
-                clusters, facial_encodings, 
-                strategy='intelligent',
-                min_large_cluster_size=max(5, total_faces * 0.01),  # 降低到1%
-                large_cluster_threshold=0.4,  # 大幅降低閾值
-                max_cross_sample_check=30,  # 增加採樣
-                small_cluster_threshold=total_faces * 0.08,  # 提高到8%
-                small_cluster_merge_threshold=0.35,  # 降低小cluster閾值
-                safety_checks=False  # 暫時關閉安全檢查
-            )
-
-            # 分析結果
-            print(f"\n📈 合併結果分析:")
-            print(f"   原始clusters: {len(clusters)}")
-            print(f"   合併後clusters: {len(processed_clusters)}")
-            print(f"   合併動作數: {len(all_merge_actions)}")
-
-            if all_merge_actions:
-                print("\n📋 詳細合併動作:")
-                for action in all_merge_actions:
-                    if action.get('type') == 'large_cluster_merge':
-                        print(f"   大cluster合併: {action['cluster_i']} + {action['cluster_j']} "
-                            f"(confidence: {action['confidence']:.3f})")
-                    elif action.get('type') == 'small_cluster_merge':
-                        print(f"   小cluster合併: {action['source']} → {action['target']} "
-                            f"(+{action['faces_added']} faces, sim: {action['similarity']:.3f})")
-
-            # 檢查cluster2是否被合併
-            cluster2_merged = False
-            for action in all_merge_actions:
-                if action.get('type') == 'large_cluster_merge':
-                    if action['cluster_i'] == 2 or action['cluster_j'] == 2:
-                        cluster2_merged = True
-                        print(f"\n✅ Cluster 2 已參與合併!")
-                        break
-
-            if not cluster2_merged:
-                print(f"\n❌ Cluster 2 沒有被合併，需要進一步調整策略")
-
-            clusters = processed_clusters
-                                    
-            # Step 5: Save clustering results
-            print(f"\n💾 Saving {len(clusters)} clusters...")
+            print(f"✅ Clustering completed: {len(clusters)} clusters found")
+            
+            # Step 4: Save clustering results
+            print(f"\n💾 Step 4: Saving {len(clusters)} clusters...")
             for idx, cluster in enumerate(clusters):
                 cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
                 if not os.path.exists(cluster_dir):
@@ -593,7 +508,7 @@ def main():
                     dst_path = os.path.join(cluster_dir, face_name)
                     shutil.copy2(face_path, dst_path)
 
-            # Step 6: Calculate cluster centers
+            # Step 5: Calculate cluster centers
             print("\n🎯 Step 5: Calculating cluster centers...")
             if args.method in ['adjusted', 'hybrid']:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
@@ -619,7 +534,7 @@ def main():
             
             # Visualization
             if args.visualize:
-                print("\n📊 Step 5: Creating visualizations...")
+                print("\n📊 Step 6: Creating visualizations...")
                 visualization.visualize_clusters(
                     clusters, facial_encodings, cluster_centers, 
                     dirs['visualization']
