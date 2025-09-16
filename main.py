@@ -183,7 +183,7 @@ def merge_audio_to_video(video_without_audio, video_with_audio, output_video_wit
 
 def create_annotated_video_mp4(input_video, output_video_mp4, centers_data_path, model_dir,
                               detection_interval=2, similarity_threshold=0.55, 
-                              temporal_weight=0.25, preserve_audio=True):
+                              temporal_weight=0.3, preserve_audio=True):
     """
     Create annotated video in MP4 format with optional audio preservation
     
@@ -360,10 +360,10 @@ def parse_arguments():
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=100, help='Batch size for feature extraction')
     parser.add_argument('--face_size', type=int, default=160, help='Face image size')
-    parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
+    parser.add_argument('--cluster_threshold', type=float, default=0.5, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
-    parser.add_argument('--similarity_threshold', type=float, default=0.55, help='Face similarity threshold')
-    parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
+    parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
+    parser.add_argument('--temporal_weight', type=float, default=0.35, help='Temporal continuity weight')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -455,7 +455,7 @@ def main():
                 emb_array, args.batch_size, face_paths
             )
             
-            # Step 3: Clustering - REVERTED TO SINGLE STAGE
+            # Step 3: Clustering
             print("\n🎯 Step 3: Clustering faces...")
             if args.method == 'adjusted':
                 clusters = clustering.cluster_facial_encodings(
@@ -475,7 +475,7 @@ def main():
                     temporal_weight=args.temporal_weight
                 )
                 
-                # Choose better result based on cluster distribution
+                # Choose better result
                 original_sizes = [len(c) for c in original_clusters]
                 adjusted_sizes = [len(c) for c in adjusted_clusters]
                 
@@ -490,15 +490,36 @@ def main():
                     print(f"Selected original clustering: {len(original_clusters)} clusters")
                     clusters = original_clusters
             else:
-                # Original method
                 clusters = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-            print(f"✅ Clustering completed: {len(clusters)} clusters found")
+             # Step 4: 後處理 - 智能合併oversplit clusters
+            print("\n🔧 Step 4: Post-processing clusters...")
             
-            # Step 4: Save clustering results
-            print(f"\n💾 Step 4: Saving {len(clusters)} clusters...")
+            # Import post-processing module
+            import cluster_post_processing
+            
+            # Apply post-processing to merge oversplit clusters
+            processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
+                clusters, facial_encodings,
+                target_clusters=[2],  # 專門針對cluster 2
+                merge_threshold=0.45,  # 合併閾值
+                max_merges_per_cluster=6  # 允許cluster 2最多合併6個小clusters
+            )
+            
+            # 更新clusters為處理後的結果
+            clusters = processed_clusters
+            
+            print(f"✅ Post-processing completed:")
+            print(f"   Merge actions: {len(merge_actions)}")
+            for action in merge_actions:
+                print(f"   Cluster {action['child']} merged into {action['parent']} "
+                      f"(+{action['faces_added']} faces, sim: {action['similarity']:.3f})")
+
+
+            # Step 5: Save clustering results
+            print(f"\n💾 Saving {len(clusters)} clusters...")
             for idx, cluster in enumerate(clusters):
                 cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
                 if not os.path.exists(cluster_dir):
@@ -508,7 +529,7 @@ def main():
                     dst_path = os.path.join(cluster_dir, face_name)
                     shutil.copy2(face_path, dst_path)
 
-            # Step 5: Calculate cluster centers
+            # Step 6: Calculate cluster centers
             print("\n🎯 Step 5: Calculating cluster centers...")
             if args.method in ['adjusted', 'hybrid']:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
@@ -534,7 +555,7 @@ def main():
             
             # Visualization
             if args.visualize:
-                print("\n📊 Step 6: Creating visualizations...")
+                print("\n📊 Step 5: Creating visualizations...")
                 visualization.visualize_clusters(
                     clusters, facial_encodings, cluster_centers, 
                     dirs['visualization']
