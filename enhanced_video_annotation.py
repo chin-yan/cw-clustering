@@ -81,7 +81,7 @@ def create_mtcnn_detector(sess):
 
 def detect_and_match_faces(frame, pnet, rnet, onet, sess, images_placeholder, 
                          embeddings, phase_train_placeholder, centers, 
-                         frame_histories, min_face_size=60, temporal_weight=0.3):
+                         frame_histories, min_face_size=60, temporal_weight=0.25):
     """
     Use the same foreground face detection logic as clustering stage
     """

@@ -96,25 +96,23 @@ def compute_face_quality(face_path):
 
 def calculate_enhanced_similarity(facial_sim, temporal_sim, temporal_weight):
     """
-    Calculate enhanced similarity using proportional boost approach
-    Only boosts similarity when temporal information is available, never penalizes
+    Improved enhanced similarity calculation with better balance
     
     Args:
         facial_sim: Basic facial similarity score (0-1)
         temporal_sim: Temporal continuity score (0-1)
         temporal_weight: Weight for temporal enhancement (0-1)
+        threshold: Current clustering threshold
         
     Returns:
         Enhanced similarity score, capped at 1.0
     """
     if temporal_sim > 0:
-        # Proportional boost: temporal information increases confidence
-        boost_factor = 1 + (temporal_weight * temporal_sim)
-        enhanced_similarity = facial_sim * boost_factor
-        return min(1.0, enhanced_similarity)  # Ensure it doesn't exceed 1.0
+        combined_sim = (1 - temporal_weight) *facial_sim + temporal_weight * temporal_sim
     else:
-        # No temporal information: use original facial similarity
-        return facial_sim
+        combined_sim = facial_sim
+
+    return combined_sim
 
 def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, temporal_weight=0.25):
     """
@@ -155,8 +153,8 @@ def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, te
     )
     
     # Post-process clusters with stricter parameters
-    final_clusters = _post_process_clusters(sorted_clusters, facial_encodings, frame_info, threshold + 0.1)
-    
+    #final_clusters = _post_process_clusters(sorted_clusters, facial_encodings, frame_info, threshold + 0.1)
+    final_clusters = sorted_clusters
     print(f"Clustering completed, a total of {len(final_clusters)} clusters")
     
     return final_clusters
@@ -231,7 +229,7 @@ def _chinese_whispers_enhanced(encoding_list, frame_info, quality_scores, thresh
             )
             
             # Create edge if enhanced similarity exceeds threshold
-            if enhanced_similarity > threshold:
+            if enhanced_similarity >= threshold:
                 edge_id = compare_idx + 1
                 encoding_edges.append((node_id, edge_id, {'weight': enhanced_similarity}))
                 
@@ -289,9 +287,9 @@ def _chinese_whispers_enhanced(encoding_list, frame_info, quality_scores, thresh
     sorted_clusters = sorted(clusters.values(), key=len, reverse=True)
     
     # Filter out clusters that are too small (likely noise)
-    filtered_clusters = [cluster for cluster in sorted_clusters if len(cluster) >= 3]  # Min 3 faces per cluster
+    #filtered_clusters = [cluster for cluster in sorted_clusters if len(cluster) >= 3]  # Min 3 faces per cluster
     
-    return filtered_clusters
+    return sorted_clusters
 
 def _post_process_clusters(clusters, facial_encodings, frame_info, merge_threshold=0.75):
     """

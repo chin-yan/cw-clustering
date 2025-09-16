@@ -11,14 +11,14 @@ import facenet.src.align.detect_face as detect_face
 def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=60, face_size=160,
                          margin=44, detect_multiple_faces=True):
     """
-    使用統一的前景人臉檢測邏輯
+    Use unified foreground face detection logic
     """
     print("Creating MTCNN network for foreground-focused face detection...")
     pnet, rnet, onet = create_mtcnn(sess, None)
     
-    # 🔥 統一的檢測參數
-    min_face_area_ratio = 0.008  # 人臉面積至少佔影像的 0.8%
-    max_faces_per_frame = 5      # 每幀最多保留 5 個人臉
+    # Unified detection parameters
+    min_face_area_ratio = 0.008  # Face area must occupy at least 0.8% of image
+    max_faces_per_frame = 5      # Keep at most 5 faces per frame
     
     face_paths = []
     face_count = 0
@@ -31,7 +31,7 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=60, face_
 
         original_frame = frame.copy()
         
-        # 🔥 使用統一的檢測函數
+        # Use unified detection function
         filtered_bboxes = detect_foreground_faces_in_frame(
             frame, pnet, rnet, onet, 
             min_face_size=min_face_size,
@@ -39,7 +39,7 @@ def detect_faces_adjusted(sess, frame_paths, output_dir, min_face_size=60, face_
             max_faces_per_frame=max_faces_per_frame
         )
         
-        # 處理篩選後的人臉
+        # Process filtered faces
         for i, bbox in enumerate(filtered_bboxes):
             bbox_size = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
             adaptive_margin = int(margin * bbox_size / 160)
@@ -129,17 +129,17 @@ def mild_preprocessing(face_img):
     if face_img is None or face_img.size == 0:
         return face_img
     
-     # -----------------------------
+    # -----------------------------
     # Step 1: Adaptive Contrast Enhancement (CLAHE)
     # -----------------------------
     gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
     brightness = np.mean(gray)
 
-    if brightness < 80:        # 太暗 → 強化對比
+    if brightness < 80:        # Too dark → enhance contrast
         clip_limit = 1.2
-    elif brightness > 180:     # 太亮 → 減弱對比
+    elif brightness > 180:     # Too bright → reduce contrast
         clip_limit = 0.6
-    else:                      # 正常 → 中等對比
+    else:                      # Normal → medium contrast
         clip_limit = 0.8
 
     lab = cv2.cvtColor(face_img, cv2.COLOR_BGR2LAB)
@@ -154,11 +154,11 @@ def mild_preprocessing(face_img):
     # -----------------------------
     variance = cv2.Laplacian(gray, cv2.CV_64F).var()
 
-    if variance < 50:   # 模糊 → 減少去雜訊，避免更糊
+    if variance < 50:   # Blurry → reduce denoising to avoid more blur
         h = 3
-    elif variance > 150: # 很清晰 → 可以強一點去雜訊
+    elif variance > 150: # Very clear → can apply stronger denoising
         h = 7
-    else:               # 中等 → 中等強度
+    else:               # Medium → medium strength
         h = 5
 
     img_denoised = cv2.fastNlMeansDenoisingColored(
@@ -172,59 +172,59 @@ def mild_preprocessing(face_img):
 def detect_foreground_faces_in_frame(frame, pnet, rnet, onet, min_face_size=60, 
                                     min_face_area_ratio=0.008, max_faces_per_frame=5):
     """
-    統一的前景人臉檢測邏輯，聚類和標註階段共用
+    Unified foreground face detection logic, shared by clustering and annotation stages
     
     Args:
-        frame: 輸入影像 (BGR format)
-        pnet, rnet, onet: MTCNN 檢測器組件
-        min_face_size: 最小人臉尺寸
-        min_face_area_ratio: 人臉面積佔影像面積的最小比例
-        max_faces_per_frame: 每幀最多保留的人臉數量
+        frame: Input image (BGR format)
+        pnet, rnet, onet: MTCNN detector components
+        min_face_size: Minimum face size
+        min_face_area_ratio: Minimum ratio of face area to image area
+        max_faces_per_frame: Maximum number of faces to keep per frame
         
     Returns:
-        filtered_bboxes: 篩選後的人臉邊界框列表
+        filtered_bboxes: List of filtered face bounding boxes
     """
     import facenet.src.align.detect_face as detect_face
     
-    # 轉換為 RGB
+    # Convert to RGB
     if len(frame.shape) == 3 and frame.shape[2] == 3:
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     else:
         frame_rgb = frame
     
-    # 計算影像面積
+    # Calculate image area
     frame_area = frame.shape[0] * frame.shape[1]
     
-    # 應用輕度對比增強（與聚類階段一致）
+    # Apply mild contrast enhancement (consistent with clustering stage)
     frame_rgb = mild_contrast_enhancement(frame_rgb)
     
-    # 🔥 使用與聚類階段相同的檢測參數
-    threshold = [0.7, 0.8, 0.8]  # 更嚴格的閾值
+    # Use same detection parameters as clustering stage
+    threshold = [0.7, 0.8, 0.8]  # Stricter thresholds
     
-    # 主要檢測
+    # Primary detection
     bounding_boxes, _ = detect_face.detect_face(
         frame_rgb, min_face_size, pnet, rnet, onet, threshold, 0.709
     )
     
-    # 如果沒有檢測到，使用較低閾值再試一次（與聚類階段一致）
+    # If no detection, try again with lower threshold (consistent with clustering stage)
     if len(bounding_boxes) == 0:
         side_threshold = [0.5, 0.6, 0.7]
         bounding_boxes, _ = detect_face.detect_face(
             frame_rgb, min_face_size * 0.8, pnet, rnet, onet, side_threshold, 0.6
         )
     
-    # 篩選和排序人臉（與聚類階段完全一致）
+    # Filter and sort faces (completely consistent with clustering stage)
     valid_faces = []
     for i, bbox in enumerate(bounding_boxes):
         bbox = bbox.astype(np.int)
         
-        # 計算人臉面積
+        # Calculate face area
         face_width = bbox[2] - bbox[0]
         face_height = bbox[3] - bbox[1]
         face_area = face_width * face_height
         face_area_ratio = face_area / frame_area
         
-        # 過濾太小的人臉
+        # Filter faces that are too small
         if face_area_ratio >= min_face_area_ratio:
             valid_faces.append({
                 'bbox': bbox,
@@ -233,15 +233,15 @@ def detect_foreground_faces_in_frame(frame, pnet, rnet, onet, min_face_size=60,
                 'index': i
             })
     
-    # 按面積排序，保留最大的幾個
+    # Sort by area and keep the largest ones
     valid_faces.sort(key=lambda x: x['area'], reverse=True)
     valid_faces = valid_faces[:max_faces_per_frame]
     
-    # 返回篩選後的邊界框
+    # Return filtered bounding boxes
     filtered_bboxes = [face_info['bbox'] for face_info in valid_faces]
     
-    # 調試信息
+    # Debug information
     if len(bounding_boxes) > len(filtered_bboxes):
-        print(f"人臉篩選: {len(bounding_boxes)} → {len(filtered_bboxes)} (保留前景主要人物)")
+        print(f" Face filtering: {len(bounding_boxes)} → {len(filtered_bboxes)} (keeping main foreground characters)")
     
     return filtered_bboxes
