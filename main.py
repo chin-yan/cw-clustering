@@ -24,6 +24,7 @@ import speaking_face_annotation
 import enhanced_face_retrieval
 import enhanced_video_annotation
 import robust_temporal_consistency
+import cluster_post_processing
 
 tf.disable_v2_behavior()
 
@@ -238,12 +239,12 @@ def create_annotated_video_mp4(input_video, output_video_mp4, centers_data_path,
             try:
                 if os.path.exists(temp_silent_video):
                     os.remove(temp_silent_video)
-                    print(f"🗑️  Cleaned up temporary file")
+                    print(f"🗑️ Cleaned up temporary file")
             except:
                 pass
             
             if not success:
-                print("⚠️  Audio merging failed, but annotated video was created")
+                print("⚠️ Audio merging failed, but annotated video was created")
                 # As fallback, convert temp video to MP4 without audio
                 try:
                     fallback_cmd = [
@@ -307,7 +308,7 @@ def create_directories(output_dir):
 
 def extract_frames(video_path, output_dir, interval=30):
     """Extract frames from video at specified intervals"""
-    print("🎞️  Extracting frames from video...")
+    print("🎞️ Extracting frames from video...")
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     frames_paths = []
@@ -402,7 +403,7 @@ def main():
         if check_ffmpeg_available():
             print("✅ FFmpeg available for audio processing")
         else:
-            print("⚠️  FFmpeg not available, audio will not be preserved")
+            print("⚠️ FFmpeg not available, audio will not be preserved")
             args.preserve_audio = False
     
     # Create output directories
@@ -494,29 +495,37 @@ def main():
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-             # Step 4: 後處理 - 智能合併oversplit clusters
+            # Step 4: Post-processing - Only merge small clusters to large clusters
             print("\n🔧 Step 4: Post-processing clusters...")
             
-            # Import post-processing module
-            import cluster_post_processing
-            
-            # Apply post-processing to merge oversplit clusters
+            # Apply small-to-large cluster merging with more reasonable thresholds
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
-                target_clusters=[2],  # 專門針對cluster 2
-                merge_threshold=0.45,  # 合併閾值
-                max_merges_per_cluster=6  # 允許cluster 2最多合併6個小clusters
+                strategy='small_to_large_only',
+                min_large_cluster_size=70,  # Large cluster threshold
+                small_cluster_percentage=0.1,  # Small clusters = 10% of total faces
+                merge_threshold=0.55,  # More reasonable base threshold
+                max_merges_per_cluster=5,  # Allow more merges if needed
+                safety_checks=True
             )
             
-            # 更新clusters為處理後的結果
+            # Update clusters to processed results
             clusters = processed_clusters
             
             print(f"✅ Post-processing completed:")
             print(f"   Merge actions: {len(merge_actions)}")
             for action in merge_actions:
-                print(f"   Cluster {action['child']} merged into {action['parent']} "
-                      f"(+{action['faces_added']} faces, sim: {action['similarity']:.3f})")
-
+                # All merge actions now use consistent naming: cluster_i (target), cluster_j (source)
+                source_cluster = action.get('cluster_j', 'unknown')
+                target_cluster = action.get('cluster_i', 'unknown')
+                faces_added = action.get('faces_added', 'unknown')
+                
+                # Get the appropriate score based on action type
+                score = action.get('confidence', action.get('similarity', 0))
+                action_type = action.get('type', 'merge')
+                
+                print(f"   {action_type}: Cluster {source_cluster} → Cluster {target_cluster} "
+                      f"(+{faces_added} faces, score: {score:.3f})")
 
             # Step 5: Save clustering results
             print(f"\n💾 Saving {len(clusters)} clusters...")
@@ -530,7 +539,7 @@ def main():
                     shutil.copy2(face_path, dst_path)
 
             # Step 6: Calculate cluster centers
-            print("\n🎯 Step 5: Calculating cluster centers...")
+            print("\n🎯 Step 6: Calculating cluster centers...")
             if args.method in ['adjusted', 'hybrid']:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
                     clusters, facial_encodings, method='min_distance'
@@ -555,7 +564,7 @@ def main():
             
             # Visualization
             if args.visualize:
-                print("\n📊 Step 5: Creating visualizations...")
+                print("\n📊 Step 7: Creating visualizations...")
                 visualization.visualize_clusters(
                     clusters, facial_encodings, cluster_centers, 
                     dirs['visualization']
@@ -611,7 +620,7 @@ def main():
                     if has_audio:
                         print("✅ Final video has audio!")
                     else:
-                        print("⚠️  Final video has no audio")
+                        print("⚠️ Final video has no audio")
         else:
             print("❌ Failed to create final annotated video")
     
@@ -629,7 +638,7 @@ def main():
             if args.preserve_audio and simple_audio_test(final_video):
                 print("🎵 ✅ Audio preserved successfully!")
             elif args.preserve_audio:
-                print("🎵 ⚠️  Audio not detected in final video")
+                print("🎵 ⚠️ Audio not detected in final video")
 
 if __name__ == "__main__":
     try:
