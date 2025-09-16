@@ -745,8 +745,8 @@ def post_process_clusters(clusters, facial_encodings, strategy='small_to_large_o
 
 
 def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_cluster_size=50,
-                                      small_cluster_percentage=0.1, merge_threshold=0.55, 
-                                      max_merges_per_cluster=5, safety_checks=True):
+                                      small_cluster_percentage=0.08, merge_threshold=0.4, 
+                                      max_merges_per_cluster=10, safety_checks=True):
     """
     Only merge small clusters to large clusters with strict conditions
     

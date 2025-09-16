@@ -495,17 +495,17 @@ def main():
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-            # Step 4: Post-processing - Only merge small clusters to large clusters
+            # Step 4: Post-processing - Aggressive merging for same person across different scenes
             print("\n🔧 Step 4: Post-processing clusters...")
             
-            # Apply small-to-large cluster merging with more reasonable thresholds
+            # Apply aggressive small-to-large cluster merging
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
                 strategy='small_to_large_only',
-                min_large_cluster_size=70,  # Large cluster threshold
-                small_cluster_percentage=0.1,  # Small clusters = 10% of total faces
-                merge_threshold=0.55,  # More reasonable base threshold
-                max_merges_per_cluster=5,  # Allow more merges if needed
+                min_large_cluster_size=50,  # Large cluster threshold
+                small_cluster_percentage=0.08,  # Small clusters = 8% of total faces
+                merge_threshold=0.40,  # Much lower base threshold for aggressive merging
+                max_merges_per_cluster=10,  # Allow more merges per large cluster
                 safety_checks=True
             )
             
