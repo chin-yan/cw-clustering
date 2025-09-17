@@ -209,7 +209,10 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
                         temporal_similarity = 1.0 - (frame_diff / max_frame_diff)
                 
                 # Combine facial and temporal similarity
-                combined_similarity = (1 - temporal_weight) * distance + temporal_weight * temporal_similarity
+                # Only use temporal if it can improve similarity
+                potential_combined = (1 - temporal_weight) * distance + temporal_weight * temporal_similarity
+                combined_similarity = max(distance, potential_combined)
+
             else:
                 # For faces that aren't similar enough, don't apply temporal boost
                 combined_similarity = distance
