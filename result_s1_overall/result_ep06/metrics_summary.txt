@@ -1,0 +1,20 @@
+============================================================
+CONFUSION MATRIX EVALUATION REPORT
+============================================================
+Total samples: 1,519
+Correct predictions: 1,177
+Overall Accuracy: 0.7749 (77.49%)
+
+Average metrics:
+  Macro Average:
+    Precision: 0.6989
+    Recall: 0.7020
+    F1-Score: 0.6956
+
+  Weighted Average:
+    Precision: 0.8295
+    Recall: 0.7749
+    F1-Score: 0.7924
+
+Best performing class: 1.0 (F1: 1.0000)
+Worst performing class: 5.0 (F1: 0.0000)
