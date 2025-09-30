@@ -1,5 +1,5 @@
 # 使用範例
-from analyzer import FaceClusteringAnalyzer, run_complete_analysis
+from analyze import FaceClusteringAnalyzer, run_complete_analysis
 
 # 方法1: 快速完整分析
 run_complete_analysis(

@@ -262,8 +262,8 @@ def post_process_clusters(clusters, facial_encodings, strategy='small_to_large_o
             clusters, facial_encodings,
             min_large_cluster_size=kwargs.get('min_large_cluster_size', 50),  # Stricter threshold
             small_cluster_percentage=kwargs.get('small_cluster_percentage', 0.05),  # 5% of total faces
-            merge_threshold=kwargs.get('merge_threshold', 0.65),  # Much stricter threshold
-            max_merges_per_cluster=kwargs.get('max_merges_per_cluster', 3),  # Fewer merges allowed
+            merge_threshold=kwargs.get('merge_threshold', 0.4),  # Much stricter threshold
+            max_merges_per_cluster=kwargs.get('max_merges_per_cluster', 10),  # Fewer merges allowed
             safety_checks=kwargs.get('safety_checks', True)
         )
         
