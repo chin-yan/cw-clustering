@@ -459,17 +459,18 @@ def main():
             # Step 3: Clustering
             print("\n🎯 Step 3: Clustering faces...")
             if args.method == 'adjusted':
-                clusters = clustering.cluster_facial_encodings(
+                clusters, clustering_metadata = clustering.cluster_facial_encodings(
                     facial_encodings, 
                     threshold='adaptive',
                     iterations=50,
                     temporal_weight=args.temporal_weight
                 )
+                print(f"Clustering metadata: {clustering_metadata}")
             elif args.method == 'hybrid':
-                original_clusters = clustering.cluster_facial_encodings(
+                original_clusters, clustering_metadata = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
                 )
-                adjusted_clusters = clustering.cluster_facial_encodings(
+                adjusted_clusters, clustering_metadata = clustering.cluster_facial_encodings(
                     facial_encodings, 
                     threshold=args.cluster_threshold,
                     iterations=50,
@@ -491,7 +492,7 @@ def main():
                     print(f"Selected original clustering: {len(original_clusters)} clusters")
                     clusters = original_clusters
             else:
-                clusters = clustering.cluster_facial_encodings(
+                clusters, clustering_metadata = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
