@@ -96,7 +96,7 @@ def compute_face_quality(face_path):
 
     return quality_score
 
-def cluster_facial_encodings(facial_encodings, threshold=None,iterations=50,temporal_weight=0.25):
+def cluster_facial_encodings(facial_encodings, threshold=0.55, iterations=30, temporal_weight=0.25):
     """
     Improved clustering for face encoding using Chinese Whispers algorithm
     with temporal analysis but more balanced parameters to avoid over-clustering
@@ -110,93 +110,14 @@ def cluster_facial_encodings(facial_encodings, threshold=None,iterations=50,temp
     Returns:
         Sorted list of clusters
     """
-    # Initialize variables
-    original_threshold = threshold
-    iterations_completed = 0
-    converged = False
-
     # Prepare data
     encoding_list = list(facial_encodings.items())
     if len(encoding_list) <= 1:
         print("Insufficient number of encodings to cluster")
-        
-        # Return empty result with metadata
-        clustering_metadata = {
-            'threshold': threshold if threshold else 0.0,
-            'threshold_type': 'N/A',
-            'iterations_completed': 0,
-            'max_iterations': iterations,
-            'converged': False,
-            'total_faces': len(encoding_list),
-            'num_clusters': 0,
-            'temporal_weight': temporal_weight
-        }
-        return [], clustering_metadata
+        return []
     
     print(f"Using adjusted Chinese Whispers algorithm to cluster {len(encoding_list)} faces...")
     
-    # Adaptive threshold calculation
-    original_threshold = threshold  # Store original value for metadata
-    if threshold is None or (isinstance(threshold, str) and threshold == 'adaptive'):
-        print("Calculating adaptive threshold based on similarity distribution...")
-        
-        # Sample faces for threshold estimation (use all if dataset is small)
-        sample_size = min(1000, len(encoding_list))
-        if len(encoding_list) > sample_size:
-            sample_indices = np.random.choice(len(encoding_list), sample_size, replace=False)
-            sample_encodings = [encoding_list[i][1] for i in sample_indices]
-        else:
-            sample_encodings = [enc for _, enc in encoding_list]
-        
-        # Calculate pairwise similarities for sample
-        sample_similarities = []
-        for i in range(min(500, len(sample_encodings))):
-            for j in range(i+1, min(i+50, len(sample_encodings))):
-                sim = np.dot(sample_encodings[i], sample_encodings[j])
-                sample_similarities.append(sim)
-        
-        # Statistical analysis of similarity distribution
-        sample_similarities = np.array(sample_similarities)
-        mean_sim = np.mean(sample_similarities)
-        std_sim = np.std(sample_similarities)
-        median_sim = np.median(sample_similarities)
-        
-        # Calculate adaptive threshold using percentile method
-        # For FaceNet, we should use higher percentiles (90-95)
-        percentile_90 = np.percentile(sample_similarities, 90)
-        percentile_95 = np.percentile(sample_similarities, 95)
-        percentile_85 = np.percentile(sample_similarities, 85)
-        
-        # Adaptive threshold formula: weighted combination
-        # Use percentile-based approach suitable for face recognition
-        if std_sim < 0.15:  # Tight distribution - very consistent faces
-            # Use higher threshold, weighted toward 95th percentile
-            threshold = 0.2 * percentile_85 + 0.5 * percentile_90 + 0.3 * percentile_95
-        elif std_sim < 0.25:  # Medium distribution
-            # Balance between 90th and 95th percentile
-            threshold = 0.3 * percentile_85 + 0.5 * percentile_90 + 0.2 * percentile_95
-        else:  # Loose distribution - varied faces
-            # More conservative, use 90th percentile primarily
-            threshold = 0.4 * percentile_85 + 0.6 * percentile_90
-        
-        # Apply bounds suitable for FaceNet (typically 0.6-0.8 for same person)
-        # For clustering, we can be slightly more permissive but still strict
-        threshold = np.clip(threshold, 0.55, 0.75)
-        
-        # Additional heuristic: if mean similarity is very low, increase threshold
-        if mean_sim < 0.3:
-            # Dataset has very diverse faces, use more conservative threshold
-            threshold = max(threshold, 0.60)
-        
-        print(f"📊 Similarity distribution statistics:")
-        print(f"   Mean: {mean_sim:.4f}, Std: {std_sim:.4f}, Median: {median_sim:.4f}")
-        print(f"   85th percentile: {percentile_85:.4f}, 90th percentile: {percentile_90:.4f}, 95th percentile: {percentile_95:.4f}")
-        print(f"✅ Adaptive threshold selected: {threshold:.4f}")
-    else:
-        # Use provided threshold
-        threshold = float(threshold)
-        print(f"Using manual threshold: {threshold:.4f}")
-
     # Extract frame information for each face
     frame_info = {}
     quality_scores = {}
@@ -218,26 +139,11 @@ def cluster_facial_encodings(facial_encodings, threshold=None,iterations=50,temp
     #final_clusters = sorted_clusters
 
     print(f"Clustering completed, a total of {len(final_clusters)} clusters")
-
-    # Store clustering metadata for logging
-    clustering_metadata = {
-        'threshold': threshold,
-        'threshold_type': 'adaptive' if (original_threshold is None or 
-                                        (isinstance(original_threshold, str) and original_threshold == 'adaptive')) 
-                                    else 'manual',
-        'iterations_completed': iterations_completed + 1,
-        'max_iterations': iterations,
-        'converged': converged,
-        'total_faces': len(encoding_list),
-        'num_clusters': len(final_clusters),
-        'temporal_weight': temporal_weight
-    }
-
-    #Return both clusters and metadata
-    return final_clusters, clustering_metadata
+    
+    return final_clusters
 
 def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, threshold=0.55, 
-                              iterations=50, temporal_weight=0.25):
+                              iterations=30, temporal_weight=0.25):
     """
     Adjusted implementation of Chinese Whispers Clustering Algorithm
     with better balance between facial similarity and temporal continuity
@@ -253,10 +159,6 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
     Returns:
         List of clusters sorted by size
     """
-    # Convergence parameters
-    convergence_threshold = 0.99  # Stop if 99% nodes don't change cluster
-    consecutive_stable_iterations = 5 # Require 3 consecutive stable iterations
-
     # Prepare data
     image_paths, encodings = zip(*encoding_list)
     encodings = np.array(encodings)
@@ -327,22 +229,13 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
     G.add_nodes_from(nodes)
     G.add_edges_from(edges)
     
-    # Iterative clustering with convergence detection
-    print(f"Starting adaptive Chinese Whispers iteration (max {iterations} times)...")
-    stable_count = 0
-    iteration = 0  # Initialize iteration counter for metadata
-
-    for iteration in range(iterations):
+    # Iterative clustering
+    print(f"Starting adjusted Chinese Whispers iteration ({iterations} times)...")
+    for _ in tqdm(range(iterations)):
         cluster_nodes = list(G.nodes)
         shuffle(cluster_nodes)
         
-        # Track changes in this iteration
-        changes = 0
-        
         for node in cluster_nodes:
-            # Store previous cluster assignment
-            prev_cluster = G.nodes[node]['cluster']
-            
             neighbors = G[node]
             clusters = {}
             
@@ -350,7 +243,8 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
             for ne in neighbors:
                 if isinstance(ne, int):
                     if G.nodes[ne]['cluster'] in clusters:
-                        weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])
+                        # Weight by edge weight but reduce influence of quality
+                        weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])  # Less influence of quality
                         clusters[G.nodes[ne]['cluster']] += weight
                     else:
                         weight = G[node][ne]['weight'] * (0.7 + 0.3 * G.nodes[ne]['quality'])
@@ -364,29 +258,8 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
                     edge_weight_sum = clusters[cluster]
                     max_cluster = cluster
             
-            # Update cluster assignment
+            # Set the clustering of the target node
             G.nodes[node]['cluster'] = max_cluster
-            
-            # Count changes
-            if prev_cluster != max_cluster:
-                changes += 1
-        
-        # Calculate stability ratio
-        total_nodes = len(cluster_nodes)
-        stability_ratio = 1.0 - (changes / total_nodes) if total_nodes > 0 else 1.0
-        
-        # Check convergence
-        if stability_ratio >= convergence_threshold:
-            stable_count += 1
-            print(f"  Iteration {iteration + 1}: Stability {stability_ratio:.4f} (stable {stable_count}/{consecutive_stable_iterations})")
-            
-            if stable_count >= consecutive_stable_iterations:
-                print(f"✅ Converged after {iteration + 1} iterations")
-                break
-        else:
-            stable_count = 0
-            if (iteration + 1) % 5 == 0:  # Print progress every 5 iterations
-                print(f"  Iteration {iteration + 1}: Stability {stability_ratio:.4f}")
     
     # Preparing clustering output
     clusters = {}
@@ -407,7 +280,7 @@ def _chinese_whispers_adjusted(encoding_list, frame_info, quality_scores, thresh
     
     return filtered_clusters
 
-def _post_process_clusters(clusters, facial_encodings, frame_info, merge_threshold=0.75):
+def _post_process_clusters(clusters, facial_encodings, frame_info, merge_threshold=0.7):
     """
     Post-process clusters with stricter parameters to avoid incorrect merging
     

@@ -361,13 +361,13 @@ def parse_arguments():
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=100, help='Batch size for feature extraction')
     parser.add_argument('--face_size', type=int, default=160, help='Face image size')
-    parser.add_argument('--cluster_threshold', type=float, default=None,help='Clustering threshold')
+    parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
     parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
     parser.add_argument('--temporal_weight', type=float, default=0.35, help='Temporal continuity weight')
     
     # Method selection
-    parser.add_argument('--method', type=str, default='adjusted', 
+    parser.add_argument('--method', type=str, default='hybrid', 
                         choices=['original', 'adjusted', 'hybrid'],
                         help='Clustering method: original, adjusted, or hybrid')
     
@@ -459,21 +459,20 @@ def main():
             # Step 3: Clustering
             print("\n🎯 Step 3: Clustering faces...")
             if args.method == 'adjusted':
-                clusters, clustering_metadata = clustering.cluster_facial_encodings(
-                    facial_encodings, 
-                    threshold='adaptive',
-                    iterations=50,
-                    temporal_weight=args.temporal_weight
-                )
-                print(f"Clustering metadata: {clustering_metadata}")
-            elif args.method == 'hybrid':
-                original_clusters, clustering_metadata = clustering.cluster_facial_encodings(
-                    facial_encodings, threshold=args.cluster_threshold
-                )
-                adjusted_clusters, clustering_metadata = clustering.cluster_facial_encodings(
+                clusters = clustering.cluster_facial_encodings(
                     facial_encodings, 
                     threshold=args.cluster_threshold,
-                    iterations=50,
+                    iterations=30,
+                    temporal_weight=args.temporal_weight
+                )
+            elif args.method == 'hybrid':
+                original_clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, threshold=args.cluster_threshold
+                )
+                adjusted_clusters = clustering.cluster_facial_encodings(
+                    facial_encodings, 
+                    threshold=args.cluster_threshold,
+                    iterations=30,
                     temporal_weight=args.temporal_weight
                 )
                 
@@ -492,7 +491,7 @@ def main():
                     print(f"Selected original clustering: {len(original_clusters)} clusters")
                     clusters = original_clusters
             else:
-                clusters, clustering_metadata = clustering.cluster_facial_encodings(
+                clusters = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
@@ -503,8 +502,8 @@ def main():
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
                 min_large_cluster_size=50,  # Large cluster threshold
-                small_cluster_percentage=0.03,  # Small clusters = 8% of total faces
-                merge_threshold=0.65,  # Much lower base threshold for aggressive merging
+                small_cluster_percentage=0.05,  # Small clusters = 5% of total faces
+                merge_threshold=0.7,  # Much lower base threshold for aggressive merging
                 max_merges_per_cluster=10,  # Allow more merges per large cluster
                 safety_checks=True
             )
