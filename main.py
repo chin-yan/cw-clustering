@@ -502,8 +502,8 @@ def main():
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
                 min_large_cluster_size=50,  # Large cluster threshold
-                small_cluster_percentage=0.08,  # Small clusters = 8% of total faces
-                merge_threshold=0.40,  # Much lower base threshold for aggressive merging
+                small_cluster_percentage=0.03,  # Small clusters = 8% of total faces
+                merge_threshold=0.65,  # Much lower base threshold for aggressive merging
                 max_merges_per_cluster=10,  # Allow more merges per large cluster
                 safety_checks=True
             )
