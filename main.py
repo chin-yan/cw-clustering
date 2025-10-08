@@ -436,6 +436,18 @@ def main():
                     min_face_size=20, face_size=args.face_size
                 )
                 
+            # Step 1.5: Quality filtering
+            print("\n🔍 Step 1.5: Filtering low-quality faces...")
+            from face_quality_filter import integrate_quality_filter_with_main
+
+            face_paths = integrate_quality_filter_with_main(face_paths, args.output_dir, strict_mode= False)
+
+            if len(face_paths) == 0:
+                print("❌ Face image that failed quality check!")
+                return
+
+            print(f"✅ Quality check completed, {len(face_paths)} high-quality face images retained")
+
             # Step 2: Feature extraction
             print("\n🧠 Step 2: Extracting facial features...")
             model_dir = os.path.expanduser(args.model_dir)
