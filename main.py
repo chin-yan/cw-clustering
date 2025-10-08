@@ -364,7 +364,7 @@ def parse_arguments():
     parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
     parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
-    parser.add_argument('--temporal_weight', type=float, default=0.35, help='Temporal continuity weight')
+    parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -483,13 +483,25 @@ def main():
                 original_std = np.std(original_sizes) / np.mean(original_sizes) if np.mean(original_sizes) > 0 else float('inf')
                 adjusted_std = np.std(adjusted_sizes) / np.mean(adjusted_sizes) if np.mean(adjusted_sizes) > 0 else float('inf')
                 
-                if len(adjusted_clusters) > 0 and (len(original_clusters) == 0 or 
-                    (len(adjusted_clusters) >= len(original_clusters) * 0.8 and adjusted_std <= original_std * 1.2)):
-                    print(f"Selected adjusted clustering: {len(adjusted_clusters)} clusters")
-                    clusters = adjusted_clusters
-                else:
-                    print(f"Selected original clustering: {len(original_clusters)} clusters")
+                if len(adjusted_clusters) > 0 and len(original_clusters) > 0:
+                    # 計算每個結果的質量分數
+                    original_avg_size = np.mean([len(c) for c in original_clusters])
+                    adjusted_avg_size = np.mean([len(c) for c in adjusted_clusters])
+                    
+                    # 偏好 cluster 數量較少的結果
+                    # 只有當 adjusted 的 cluster 數明顯較少,或質量明顯更好時才選擇它
+                    if (len(adjusted_clusters) <= len(original_clusters) * 0.7 or 
+                        (len(adjusted_clusters) <= len(original_clusters) and 
+                        adjusted_std < original_std * 0.8)):
+                        print(f"Selected adjusted clustering: {len(adjusted_clusters)} clusters")
+                        clusters = adjusted_clusters
+                    else:
+                        print(f"Selected original clustering: {len(original_clusters)} clusters")
+                        clusters = original_clusters
+                elif len(original_clusters) > 0:
                     clusters = original_clusters
+                else:
+                    clusters = adjusted_clusters
             else:
                 clusters = clustering.cluster_facial_encodings(
                     facial_encodings, threshold=args.cluster_threshold
@@ -502,9 +514,9 @@ def main():
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
                 min_large_cluster_size=50,  # Large cluster threshold
-                small_cluster_percentage=0.05,  # Small clusters = 5% of total faces
-                merge_threshold=0.7,  # Much lower base threshold for aggressive merging
-                max_merges_per_cluster=10,  # Allow more merges per large cluster
+                small_cluster_percentage=0.08,  # Small clusters = 5% of total faces
+                merge_threshold=0.4,  # Much lower base threshold for aggressive merging
+                max_merges_per_cluster=15,  # Allow more merges per large cluster
                 safety_checks=True
             )
             
