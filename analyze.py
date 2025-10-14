@@ -187,7 +187,7 @@ class S1EpisodeAnalyzer:
             self.create_summary_dataframe()
         
         print("\n" + "="*70)
-        print("SEASON 1 COMPREHENSIVE ANALYSIS REPORT")
+        print("SEASON 2 COMPREHENSIVE ANALYSIS REPORT")
         print("="*70)
         print(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"Total Episodes: {len(self.episode_data)}")
@@ -419,7 +419,7 @@ class S1EpisodeAnalyzer:
         
         plt.colorbar(im, ax=ax9, shrink=0.8)
         
-        plt.suptitle('Season 1 Face Clustering Performance Analysis', fontsize=20, fontweight='bold', y=0.98)
+        plt.suptitle('Season 2 Face Clustering Performance Analysis', fontsize=20, fontweight='bold', y=0.98)
         
         if save_plots:
             save_path = self.output_dir / 'season1_performance_analysis.png'
@@ -533,7 +533,7 @@ class S1EpisodeAnalyzer:
         
         report_lines = []
         report_lines.append("="*80)
-        report_lines.append("SEASON 1 FACE CLUSTERING EXPERIMENT ANALYSIS REPORT")
+        report_lines.append("SEASON 2 FACE CLUSTERING EXPERIMENT ANALYSIS REPORT")
         report_lines.append("="*80)
         report_lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report_lines.append("")
@@ -652,7 +652,7 @@ class S1EpisodeAnalyzer:
         report_lines.append("="*80)
         
         if save_report:
-            report_path = self.output_dir / 'season1_analysis_report.txt'
+            report_path = self.output_dir / 'season2_analysis_report.txt'
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write('\n'.join(report_lines))
             print(f"Analysis report saved to: {report_path}")
@@ -674,7 +674,7 @@ class S1EpisodeAnalyzer:
             self.create_summary_dataframe()
         
         if filename is None:
-            filename = self.output_dir / 'season1_analysis.xlsx'
+            filename = self.output_dir / 'season2_analysis.xlsx'
         
         try:
             with pd.ExcelWriter(filename, engine='openpyxl') as writer:
@@ -804,7 +804,7 @@ def main():
     """Main function demonstrating usage"""
     
     # Set your results directory path here
-    results_directory = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s1_overall"  # Adjust path as needed
+    results_directory = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_overall"  # Adjust path as needed
     
     print("Season 1 Face Clustering Analysis Tool")
     print("="*50)
@@ -826,9 +826,4 @@ def main():
         print("Analysis failed. Please check the error messages above.")
 
 if __name__ == "__main__":
-    # You can run the main function or use individual components
     main()
-    
-    # Alternative: Quick analysis only
-    # results_dir = r"result_s1_overall"
-    # quick_analyzer = quick_analysis(results_dir)

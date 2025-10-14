@@ -22,7 +22,7 @@ class ConfusionMatrixAnalyzer:
         """
         self.excel_file_path = excel_file_path
         
-        self.output_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s1ep3"
+        self.output_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep10"
         self.confusion_matrix = None
         self.labels = None
         
@@ -387,7 +387,7 @@ class ConfusionMatrixAnalyzer:
 
 # Usage example
 if __name__ == "__main__":
-    analyzer = ConfusionMatrixAnalyzer(r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s1ep3\confusion_matrix_s1ep3.xlsx")
+    analyzer = ConfusionMatrixAnalyzer(r"C:\Users\VIPLAB\Downloads\confusion_matrix_s2ep10.xlsx")
     
     print("="*80)
     print("Starting Confusion Matrix analysis...")
