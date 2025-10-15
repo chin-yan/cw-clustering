@@ -17,8 +17,7 @@ import time
 import face_detection
 import feature_extraction
 import clustering
-import visualization
-import face_retrieval  
+import visualization 
 import enhanced_face_preprocessing  
 import speaking_face_annotation 
 import enhanced_face_retrieval
