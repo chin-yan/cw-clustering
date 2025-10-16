@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Improved Speaking Moment Ground Truth Annotation Tool
-Improvements:
-1. Real-time face detection with bounding box display.
-2. Fixes the contradiction of having recognition results without faces.
-3. Supports annotating at the start, middle, and end points of each subtitle.
+Enhanced Speaking Moment Ground Truth Annotation Tool
+New Feature: Support for cases where the speaker is not visible in the current frame
 """
 
 import os
@@ -52,7 +49,7 @@ class RealTimeFaceDetector:
         self.phase_train_placeholder = None
         
     def initialize(self):
-        """Initializes the models"""
+        """Initialize models"""
         print("🔧 Initializing face detection and recognition models...")
         
         # Load cluster centers
@@ -81,10 +78,10 @@ class RealTimeFaceDetector:
     
     def detect_and_identify_faces(self, frame):
         """
-        Detects and identifies faces in a frame.
+        Detect and identify faces in a frame
         
         Returns:
-            List[dict]: Information for each face {bbox, character_id, similarity, encoding}
+            List[dict]: Face information {bbox, character_id, similarity, encoding}
         """
         with self.graph.as_default():
             # 1. Detect faces
@@ -136,7 +133,7 @@ class RealTimeFaceDetector:
                 best_idx = np.argmax(similarities)
                 best_sim = similarities[best_idx]
                 
-                # Only accept results above the threshold
+                # Only accept results above threshold
                 character_id = best_idx if best_sim > 0.55 else -1
                 
                 faces.append({
@@ -149,21 +146,22 @@ class RealTimeFaceDetector:
             return faces
     
     def cleanup(self):
-        """Cleans up resources"""
+        """Clean up resources"""
         if self.sess:
             self.sess.close()
 
 
 class ImprovedGroundTruthTool:
-    """Improved Ground Truth Annotation Tool"""
+    """Enhanced Ground Truth Annotation Tool"""
     
     def __init__(self, video_path, srt_path, model_dir, centers_data_path, 
-                 output_dir, character_names=None):
+                 output_dir, character_names=None, time_offset=0.0):
         self.video_path = video_path
         self.srt_path = srt_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
         self.character_names = character_names or {}
+        self.time_offset = time_offset  # Time offset for subtitle sampling
         
         # Load video
         self.cap = cv2.VideoCapture(video_path)
@@ -178,6 +176,8 @@ class ImprovedGroundTruthTool:
         print(f"   FPS: {self.fps:.2f}")
         print(f"   Total frames: {self.total_frames:,}")
         print(f"   Duration: {self.duration:.2f} seconds")
+        if time_offset != 0:
+            print(f"   Time offset: {time_offset:.2f} seconds")
         
         # Load subtitles and expand annotation points
         self.annotation_points = self._load_and_expand_subtitles()
@@ -195,56 +195,56 @@ class ImprovedGroundTruthTool:
         
     def _load_and_expand_subtitles(self):
         """
-        Loads subtitles and expands them into multiple annotation points.
-        Each subtitle generates 3 points: start, middle, and end.
+        Load subtitles and expand into multiple annotation points
+        Each subtitle generates 3 points: start, middle, and end
         """
         print(f"\n📖 Loading subtitles: {self.srt_path}")
         
-        # Handle BOM issue: first read the file content and remove the BOM
+        # Handle BOM issue
         try:
             with open(self.srt_path, 'r', encoding='utf-8-sig') as f:
                 content = f.read()
             
-            # Write to a temporary file
+            # Write to temporary file
             import tempfile
             with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', 
                                              delete=False, encoding='utf-8') as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
             
-            # Load from the temporary file
+            # Load from temporary file
             subs = pysrt.open(tmp_path, encoding='utf-8')
             
-            # Delete the temporary file
+            # Delete temporary file
             try:
                 os.unlink(tmp_path)
             except:
                 pass
                 
         except Exception as e:
-            print(f"⚠️  Falling back to standard subtitle loading method")
+            print(f"⚠️  Falling back to standard loading method")
             subs = pysrt.open(self.srt_path, encoding='utf-8')
         
         annotation_points = []
         
         for sub in subs:
-            start_sec = self._time_to_seconds(sub.start)
-            end_sec = self._time_to_seconds(sub.end)
+            start_sec = self._time_to_seconds(sub.start) + self.time_offset
+            end_sec = self._time_to_seconds(sub.end) + self.time_offset
             mid_sec = (start_sec + end_sec) / 2
             
             text = sub.text_without_tags.strip()
             
-            # Clean up subtitle_id, removing potential BOM or other special characters
+            # Clean subtitle_id
             subtitle_id = int(str(sub.index).strip().lstrip('\ufeff'))
             
-            # Create 3 annotation points for each subtitle
+            # Create 3 annotation points per subtitle
             for position, timestamp in [
                 ('start', start_sec),
                 ('mid', mid_sec),
                 ('end', end_sec)
             ]:
                 annotation_points.append({
-                    'subtitle_id': subtitle_id,  # Already a clean int
+                    'subtitle_id': subtitle_id,
                     'position': position,
                     'timestamp': timestamp,
                     'text': text,
@@ -255,20 +255,20 @@ class ImprovedGroundTruthTool:
         return annotation_points
     
     def _time_to_seconds(self, time_obj):
-        """Converts a time object to seconds"""
+        """Convert time object to seconds"""
         return (time_obj.hours * 3600 + 
                 time_obj.minutes * 60 + 
                 time_obj.seconds + 
                 time_obj.milliseconds / 1000.0)
     
     def get_character_name(self, char_id):
-        """Gets the character name"""
+        """Get character name"""
         if char_id == -1:
             return "Unknown"
         return self.character_names.get(char_id, f"ID_{char_id}")
     
     def _get_frame_at_time(self, timestamp):
-        """Gets the frame at a specific timestamp"""
+        """Get frame at specific timestamp"""
         frame_idx = int(timestamp * self.fps)
         
         # Check cache
@@ -285,9 +285,9 @@ class ImprovedGroundTruthTool:
         # Detect and identify faces
         faces = self.detector.detect_and_identify_faces(frame)
         
-        # Cache the result (limit cache size)
+        # Cache result (limit cache size)
         if len(self.frame_cache) > 100:
-            # Remove the oldest cache entry
+            # Remove oldest entry
             oldest_key = min(self.frame_cache.keys())
             del self.frame_cache[oldest_key]
         
@@ -296,7 +296,7 @@ class ImprovedGroundTruthTool:
         return frame, faces
     
     def _prepare_display_frame(self, frame, point, faces):
-        """Prepares the frame for display"""
+        """Prepare frame for display"""
         display_frame = frame.copy()
         h, w = display_frame.shape[:2]
         
@@ -308,16 +308,15 @@ class ImprovedGroundTruthTool:
             x1, y1, x2, y2 = bbox
             
             # Default color: Orange (not annotated)
-            color = (0, 150, 255) # Orange
+            color = (0, 150, 255)  # Orange
             thickness = 3
             label = f"#{idx} {self.get_character_name(char_id)}"
             
             # Check if this face has been annotated
             point_key = f"{point['subtitle_id']}_{point['position']}"
             if point_key in self.annotations:
-                # If this face's ID is in the annotation
                 if char_id in self.annotations[point_key].get('all_faces', []):
-                    color = (0, 255, 0)  # Green: Annotated and correct
+                    color = (0, 255, 0)  # Green: Annotated
                     thickness = 4
                     label = f"#{idx} ✓ {self.get_character_name(char_id)}"
             
@@ -341,14 +340,14 @@ class ImprovedGroundTruthTool:
             cv2.putText(display_frame, sim_text, (x1, y2 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         
-        # If no faces are detected
+        # If no faces detected
         if not faces:
             warning = "⚠️ No faces detected in this frame"
             cv2.putText(display_frame, warning, (10, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         
         # Create info panel
-        panel_height = 250
+        panel_height = 280  # Increased height for new instructions
         panel = np.zeros((panel_height, w, 3), dtype=np.uint8)
         
         # Check current annotation status
@@ -356,12 +355,13 @@ class ImprovedGroundTruthTool:
         annotation_status = "Not annotated"
         if point_key in self.annotations:
             ann = self.annotations[point_key]
-            if ann['status'] == 'all_correct':
-                annotation_status = f"✓ All correct (Speaker: ID {ann['speaker_id']})"
-            elif ann['status'] == 'partially_corrected':
-                annotation_status = f"⚠️ Corrected (Speaker: ID {ann['speaker_id']})"
-            elif ann['status'] == 'unknown':
-                annotation_status = "? Unknown"
+            status_map = {
+                'all_correct': f"✓ All correct (Speaker: ID {ann['speaker_id']})",
+                'partially_corrected': f"⚠️ Corrected (Speaker: ID {ann['speaker_id']})",
+                'unknown': "? Unknown",
+                'speaker_not_visible': f"⚠️ Speaker not visible (Speaker ID: {ann['speaker_id']})"
+            }
+            annotation_status = status_map.get(ann['status'], "Annotated")
         
         info_lines = [
             f"Progress: {self.current_idx + 1}/{len(self.annotation_points)}",
@@ -371,8 +371,9 @@ class ImprovedGroundTruthTool:
             f"Current status: {annotation_status}",
             "",
             "Instructions:",
-            "  c = All Correct (all face IDs are correct, then specify speaker)",
-            "  m = Manual Annotation (confirm/correct each face ID one by one)",
+            "  c = All Correct (all face IDs correct, then specify speaker)",
+            "  m = Manual Annotation (confirm/correct each face ID)",
+            "  x = Speaker Not Visible (NEW! speaker not in current frame)",
             "  u = Unknown | s = Skip | n = Next | p = Previous | q = Save & Quit"
         ]
         
@@ -387,8 +388,8 @@ class ImprovedGroundTruthTool:
         return result
     
     def _handle_key(self, key, point, faces):
-        """Handles key presses - improved annotation workflow"""
-        # Ensure subtitle_id is a clean integer
+        """Handle key presses - Enhanced with speaker not visible support"""
+        # Ensure subtitle_id is clean integer
         try:
             subtitle_id = int(str(point['subtitle_id']).strip().lstrip('\ufeff'))
         except:
@@ -421,8 +422,62 @@ class ImprovedGroundTruthTool:
             print("? Marked as unknown")
             return 'next'
         
+        elif key == ord('x'):
+            # NEW: Speaker not visible in current frame
+            print(f"\n⚠️  Speaker Not Visible Mode")
+            print("The speaker is not in the current frame (e.g., camera cut to another person)")
+            
+            # Record faces currently in frame
+            all_face_ids = [int(face['character_id']) for face in faces]
+            
+            if faces:
+                print(f"\nFaces currently visible in frame:")
+                for idx, face in enumerate(faces, 1):
+                    print(f"  #{idx}: {self.get_character_name(face['character_id'])} (ID: {face['character_id']})")
+            else:
+                print("\nNo faces detected in current frame")
+            
+            # Let user input speaker ID
+            try:
+                print(f"\nSubtitle text: \"{point['text']}\"")
+                speaker_input = input(f"Enter the speaker's ID (or press Enter to skip): ").strip()
+                
+                if speaker_input == "":
+                    print("Annotation skipped.")
+                    return 'stay'
+                
+                speaker_id = int(speaker_input)
+                
+                # Confirmation
+                confirm = input(f"Confirm: Speaker is ID {speaker_id} ({self.get_character_name(speaker_id)}), "
+                              f"but not in current frame? (y/n): ").strip().lower()
+                
+                if confirm != 'y':
+                    print("Annotation cancelled.")
+                    return 'stay'
+                
+                self.annotations[point_key] = {
+                    'subtitle_id': subtitle_id,
+                    'position': str(point['position']),
+                    'timestamp': float(point['timestamp']),
+                    'text': str(point['text']),
+                    'speaker_id': speaker_id,
+                    'all_faces': all_face_ids,  # Faces in frame (not including speaker)
+                    'status': 'speaker_not_visible',
+                    'note': f'Speaker ID {speaker_id} is not visible in frame. Visible faces: {all_face_ids}'
+                }
+                print(f"✓ Annotated: Speaker ID {speaker_id} not visible in frame")
+                return 'next'
+                
+            except ValueError:
+                print("❌ Invalid input. Must be a number.")
+                return 'stay'
+            except Exception as e:
+                print(f"❌ Error: {e}")
+                return 'stay'
+        
         elif key == ord('c'):
-            # All correct: assumes all face IDs are correct, let user specify the speaker
+            # All correct
             if not faces:
                 print("❌ No faces to annotate.")
                 return 'stay'
@@ -432,9 +487,9 @@ class ImprovedGroundTruthTool:
             for idx, face in enumerate(faces, 1):
                 print(f"  #{idx}: {self.get_character_name(face['character_id'])} (ID: {face['character_id']})")
             
-            # Let user specify the speaker
+            # Let user specify speaker
             try:
-                speaker_choice = input(f"\nPlease select the speaker's number (1-{len(faces)}, or press Enter to skip): ").strip()
+                speaker_choice = input(f"\nSelect speaker's number (1-{len(faces)}, or press Enter to skip): ").strip()
                 
                 if speaker_choice == "":
                     print("Speaker annotation skipped.")
@@ -464,7 +519,7 @@ class ImprovedGroundTruthTool:
                 return 'stay'
         
         elif key == ord('m'):
-            # Manual annotation: confirm each face one by one
+            # Manual annotation
             if not faces:
                 print("❌ No faces to annotate.")
                 return 'stay'
@@ -479,8 +534,7 @@ class ImprovedGroundTruthTool:
                 print(f"\nFace #{idx}:")
                 print(f"  System ID: {self.get_character_name(detected_id)} (ID: {detected_id})")
                 
-                # Let user confirm or correct
-                response = input(f"  Is this correct? (y=yes / enter correct ID / n=skip): ").strip().lower()
+                response = input(f"  Correct? (y=yes / enter correct ID / n=skip): ").strip().lower()
                 
                 if response == 'y':
                     corrected_faces.append(detected_id)
@@ -489,30 +543,29 @@ class ImprovedGroundTruthTool:
                     print(f"  ✗ Skipped this face")
                     continue
                 else:
-                    # Try to parse as ID
                     try:
                         correct_id = int(response)
                         corrected_faces.append(correct_id)
                         print(f"  ✓ Corrected to ID {correct_id}")
                     except:
-                        print(f"  ✗ Invalid input, skipping this face")
+                        print(f"  ✗ Invalid input, skipping")
                         continue
             
             if not corrected_faces:
                 print("❌ No faces were annotated.")
                 return 'stay'
             
-            # Let user specify the speaker from the corrected list
+            # Specify speaker
             print(f"\nAnnotated faces: {corrected_faces}")
             try:
-                speaker_input = input(f"Please enter the speaker's ID (or press Enter to skip): ").strip()
+                speaker_input = input(f"Enter speaker's ID (or press Enter to skip): ").strip()
                 
                 if speaker_input == "":
                     speaker_id = corrected_faces[0] if corrected_faces else -1
                 else:
                     speaker_id = int(speaker_input)
                     if speaker_id not in corrected_faces:
-                        print(f"⚠️  Warning: ID {speaker_id} is not in the list of annotated faces.")
+                        print(f"⚠️  Warning: ID {speaker_id} not in annotated faces list.")
                 
                 self.annotations[point_key] = {
                     'subtitle_id': subtitle_id,
@@ -533,21 +586,35 @@ class ImprovedGroundTruthTool:
         return 'stay'
     
     def run_annotation(self):
-        """Runs the annotation process"""
+        """Run annotation process"""
         print("\n" + "="*70)
-        print("🏷️  Improved Ground Truth Annotation Tool")
+        print("🏷️  Enhanced Ground Truth Annotation Tool")
         print("="*70)
-        print("\n📋 Annotation Workflow Instructions:")
-        print("1. Observe all faces in the frame (Orange box = Not annotated, Green box = Annotated).")
-        print("2. Choose an action:")
-        print("   c = All Correct (if all face IDs are correct) → You will be asked to specify the speaker.")
-        print("   m = Manual Annotation (to confirm/correct each face ID) → You will be prompted for each face.")
-        print("   u = Unknown / s = Skip / n = Next / p = Previous")
-        print("   q = Save & Quit / ESC = Quit without saving")
-        print("\n💡 Important Tips:")
-        print("   - If there are 2 faces and both are correct: Press 'c' then select the speaker.")
-        print("   - If any face ID is incorrect: Press 'm' to enter Manual Annotation mode.")
-        print("   - The annotation data includes: The speaker's ID + all visible face IDs.")
+        print("\n📋 Annotation Workflow:")
+        print("1. Observe all faces in frame (Orange = Not annotated, Green = Annotated)")
+        print("2. Choose action based on situation:")
+        print("")
+        print("   🟢 c = All Correct")
+        print("      Use when: All detected face IDs are correct AND speaker is in frame")
+        print("      → You'll select which person is speaking")
+        print("")
+        print("   🔵 m = Manual Annotation")
+        print("      Use when: Some face IDs need correction")
+        print("      → You'll confirm/correct each face one by one")
+        print("")
+        print("   🟠 x = Speaker Not Visible (NEW!)")
+        print("      Use when: The speaker is NOT in the current frame")
+        print("      Example: Subtitle shows A speaking, but camera shows B's reaction")
+        print("      → You'll enter the speaker's ID manually")
+        print("")
+        print("   ⚪ Other options:")
+        print("      u = Unknown | s = Skip | n = Next | p = Previous")
+        print("      q = Save & Quit | ESC = Quit without saving")
+        print("")
+        print("💡 Tips:")
+        print("   - If 2 faces visible and both IDs correct: Press 'c' then select speaker")
+        print("   - If speaker changed but frame hasn't: Press 'x' and enter speaker ID")
+        print("   - System saves: speaker_id + all visible faces in frame")
         print("="*70)
         
         input("\nPress Enter to start annotating...")
@@ -563,11 +630,11 @@ class ImprovedGroundTruthTool:
                 self.current_idx += 1
                 continue
             
-            # Prepare for display
+            # Prepare display
             display_frame = self._prepare_display_frame(frame, point, faces)
             cv2.imshow('Ground Truth Annotation Tool', display_frame)
             
-            # Wait for key press
+            # Wait for key
             key = cv2.waitKey(0) & 0xFF
             action = self._handle_key(key, point, faces)
             
@@ -589,13 +656,12 @@ class ImprovedGroundTruthTool:
         self._print_stats()
     
     def _save_annotations(self):
-        """Saves annotations"""
-        output_file = self.output_dir / 'speaking_moments_ground_truth_improved.json'
+        """Save annotations"""
+        output_file = self.output_dir / 'speaking_moments_ground_truth_enhanced.json'
         
-        # Convert to a JSON-serializable format
+        # Convert to JSON-serializable format
         serializable_annotations = {}
         for key, value in self.annotations.items():
-            # This block might need adjustment to match the new data structure from _handle_key
             serializable_annotations[key] = {
                 'subtitle_id': int(value.get('subtitle_id', 0)),
                 'position': value.get('position', ''),
@@ -603,17 +669,18 @@ class ImprovedGroundTruthTool:
                 'text': value.get('text', ''),
                 'speaker_id': int(value.get('speaker_id', -1)),
                 'all_faces': value.get('all_faces', []),
-                'status': value.get('status', 'unknown')
+                'status': value.get('status', 'unknown'),
+                'note': value.get('note', '')
             }
         
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_annotations, f, indent=2, ensure_ascii=False)
         
         print(f"\n💾 Saved to: {output_file}")
-        print(f"   Number of annotations: {len(self.annotations)}")
+        print(f"   Annotation count: {len(self.annotations)}")
     
     def _print_stats(self):
-        """Prints statistics"""
+        """Print statistics"""
         if not self.annotations:
             return
         
@@ -626,18 +693,29 @@ class ImprovedGroundTruthTool:
         print("="*70)
         print(f"Total annotation points: {len(self.annotation_points)}")
         print(f"Annotated: {len(self.annotations)}")
+        print("\nBreakdown by status:")
+        status_labels = {
+            'all_correct': '✓ All Correct (speaker visible)',
+            'partially_corrected': '⚠️ Partially Corrected',
+            'speaker_not_visible': '🔶 Speaker Not Visible (NEW!)',
+            'unknown': '? Unknown',
+            'skipped': '⏭️ Skipped'
+        }
         for status, count in stats.items():
-            print(f"  - {status}: {count}")
+            label = status_labels.get(status, status)
+            print(f"  {label}: {count}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Improved Speaking Moment Ground Truth Annotation Tool')
-    parser.add_argument('--video', required=True, help='Path to the video file')
-    parser.add_argument('--srt', required=True, help='Path to the subtitle file')
-    parser.add_argument('--model-dir', required=True, help='Path to the FaceNet model directory')
-    parser.add_argument('--centers-data', required=True, help='Path to the cluster centers data file')
-    parser.add_argument('--output', default='./ground_truth_improved', help='Output directory')
-    parser.add_argument('--character-names', help='Path to the character names JSON file')
+    parser = argparse.ArgumentParser(description='Enhanced Speaking Moment Ground Truth Tool')
+    parser.add_argument('--video', required=True, help='Video file path')
+    parser.add_argument('--srt', required=True, help='Subtitle file path')
+    parser.add_argument('--model-dir', required=True, help='FaceNet model directory')
+    parser.add_argument('--centers-data', required=True, help='Cluster centers data file')
+    parser.add_argument('--output', default='./ground_truth_enhanced', help='Output directory')
+    parser.add_argument('--character-names', help='Character names JSON file path')
+    parser.add_argument('--time-offset', type=float, default=0.0, 
+                       help='Time offset in seconds (negative = sample earlier, positive = sample later)')
     
     args = parser.parse_args()
     
@@ -651,14 +729,15 @@ def main():
         except Exception as e:
             print(f"⚠️  Could not load character names: {e}")
     
-    # Create the tool instance
+    # Create tool instance
     tool = ImprovedGroundTruthTool(
         video_path=args.video,
         srt_path=args.srt,
         model_dir=args.model_dir,
         centers_data_path=args.centers_data,
         output_dir=args.output,
-        character_names=character_names
+        character_names=character_names,
+        time_offset=args.time_offset
     )
     
     # Run annotation
