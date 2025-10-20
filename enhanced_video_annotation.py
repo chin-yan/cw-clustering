@@ -13,6 +13,10 @@ from facenet.src import facenet
 
 import face_detection
 import feature_extraction
+from speaking_annotation_filter import (
+    detect_and_match_faces_with_speaking_filter,
+    AudioActivityAnalyzer
+)
 
 def load_centers_data(centers_data_path):
     """
@@ -239,6 +243,12 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
         similarity_threshold: Minimum similarity threshold for matching
         temporal_weight: Weight for temporal consistency
     """
+    audio_analyzer = None
+    try:
+        audio_analyzer = AudioActivityAnalyzer(input_video)
+    except:
+        print("Warning: Audio analysis not available")
+
     # Store the detection results of each frame
     frame_detection_results = {}
 
@@ -314,11 +324,13 @@ def annotate_video_with_enhanced_detection(input_video, output_video, centers_da
                 start_time = time.time()
                 
                 if frame_count % detection_interval == 0:
-                    faces = detect_and_match_faces(
+                    faces = detect_and_match_faces_with_speaking_filter(
                         frame, pnet, rnet, onet, sess, 
                         images_placeholder, embeddings, phase_train_placeholder, 
-                        centers, frame_histories, 
-                        min_face_size=60,  # Consistent with clustering stage
+                        centers, frame_histories,
+                        audio_analyzer=audio_analyzer,  # Pass audio analyzer
+                        frame_idx=frame_count,
+                        min_face_size=60,
                         temporal_weight=temporal_weight
                     )
                     

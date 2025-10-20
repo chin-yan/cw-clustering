@@ -425,8 +425,10 @@ def main():
             # Step 1: Face detection
             print("\n👤 Step 1: Detecting faces...")
             if args.method in ['adjusted', 'hybrid']:
-                face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
+                from speaking_based_filter import detect_faces_with_speaking_filter
+                face_paths = detect_faces_with_speaking_filter(
                     sess, frames_paths, dirs['faces'], 
+                    video_path=args.input_video,  # Add video path for audio
                     min_face_size=60, face_size=args.face_size
                 )
             else:
