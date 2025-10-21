@@ -22,7 +22,6 @@ import enhanced_face_preprocessing
 import speaking_face_annotation 
 import enhanced_face_retrieval
 import enhanced_video_annotation
-import robust_temporal_consistency
 import cluster_post_processing
 
 tf.disable_v2_behavior()

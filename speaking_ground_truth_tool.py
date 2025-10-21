@@ -241,9 +241,7 @@ class ImprovedGroundTruthTool:
             
             # Create 3 annotation points per subtitle
             for position, timestamp in [
-                ('start', start_sec),
-                ('mid', mid_sec),
-                ('end', end_sec)
+                ('start', start_sec)
             ]:
                 annotation_points.append({
                     'subtitle_id': subtitle_id,
@@ -370,6 +368,8 @@ class ImprovedGroundTruthTool:
                 annotation_status = f"WARNING Corrected (Speaker: ID {ann.get('speaker_id', -1)})"
             elif status == 'unknown':
                 annotation_status = "? Unknown"
+            elif status == 'narration':
+                annotation_status = "NARRATION (Voiceover/Narrator)"
             elif status == 'speaker_not_visible':
                 annotation_status = f"WARNING Speaker not visible (Speaker ID: {ann.get('speaker_id', -1)})"
         
@@ -385,6 +385,7 @@ class ImprovedGroundTruthTool:
             "  m = Manual Annotation (confirm/correct each face)",
             "  h = Chorus Mode (NEW! multiple speakers)",
             "  x = Speaker Not Visible (speaker not in frame)",
+            "  v = Narration (voiceover/narrator, no visible speaker)",
             "  u = Unknown | s = Skip | n = Next | p = Previous | q = Save & Quit"
         ]
         
@@ -552,6 +553,45 @@ class ImprovedGroundTruthTool:
             except Exception as e:
                 print(f"ERROR: {e}")
                 return 'stay'
+            
+        elif key == ord('v'):
+            # NEW: Narration/Voiceover Mode
+            print(f"\nNARRATION MODE")
+            print("This is a voiceover/narrator speaking (no visible speaker in scene)")
+            
+            # Record faces currently in frame (for context)
+            all_face_ids = [int(face['character_id']) for face in faces]
+            
+            if faces:
+                print(f"\nNote: {len(faces)} face(s) visible in frame, but narrator is speaking:")
+                for idx, face in enumerate(faces, 1):
+                    print(f"  #{idx}: {self.get_character_name(face['character_id'])} (ID: {face['character_id']})")
+            else:
+                print("\nNo faces detected in current frame")
+            
+            print(f"\nSubtitle text: \"{point['text']}\"")
+            
+            # Confirmation
+            confirm = input(f"Confirm this is narration/voiceover? (y/n): ").strip().lower()
+            
+            if confirm != 'y':
+                print("Annotation cancelled.")
+                return 'stay'
+            
+            # Save as narration
+            self.annotations[point_key] = {
+                'subtitle_id': subtitle_id,
+                'position': str(point['position']),
+                'timestamp': float(point['timestamp']),
+                'text': str(point['text']),
+                'speaker_id': -2,  # Use -2 to indicate narration (different from -1 unknown)
+                'speaker_ids': [-2],
+                'all_faces': all_face_ids,  # Record what faces are visible (for context)
+                'status': 'narration',
+                'note': f'Narration/voiceover. Visible faces in frame: {all_face_ids}'
+            }
+            print(f"OK Annotated as narration")
+            return 'next'
         
         elif key == ord('c'):
             # All correct
@@ -677,11 +717,13 @@ class ImprovedGroundTruthTool:
         print("   m = Manual Annotation (correct face IDs)")
         print("   h = Chorus Mode (NEW! multiple speakers)")
         print("   x = Speaker Not Visible (speaker not in frame)")
+        print("   v = Narration (voiceover/narrator)")
         print("   u = Unknown | s = Skip | n = Next | p = Previous")
         print("   q = Save & Quit | ESC = Quit without saving")
         print("")
         print("Tips:")
         print("   - Chorus Mode: Press 'h' then enter numbers like '1,2,3'")
+        print("   - Narration: Press 'v' for voiceover/narrator scenes")
         print("   - System saves: speaker_id(s) + all visible faces")
         print("="*70)
         
@@ -771,6 +813,7 @@ class ImprovedGroundTruthTool:
             'partially_corrected': 'WARNING Partially Corrected',
             'chorus': 'CHORUS Multiple Speakers (NEW!)',
             'speaker_not_visible': 'WARNING Speaker Not Visible',
+            'narration': 'NARRATION Voiceover/Narrator',
             'unknown': '? Unknown',
             'skipped': 'SKIP Skipped'
         }

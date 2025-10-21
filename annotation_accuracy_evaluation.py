@@ -268,6 +268,15 @@ class SpeakingAccuracyEvaluator:
                 # Mark as special case
                 status_metrics[gt_status]['total'] += 1
                 result_label = 'not_applicable'
+
+            elif gt_status == 'narration':
+                # Narration - system should not predict any specific speaker
+                # This is expected to have no correct speaker match
+                status_metrics[gt_status]['total'] += 1
+                
+                # For narration, we don't evaluate as correct/wrong
+                # Just mark as special case
+                result_label = 'narration_not_evaluated'
             
             elif gt_status in ['all_correct', 'partially_corrected']:
                 # Normal single speaker case
