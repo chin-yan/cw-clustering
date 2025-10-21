@@ -182,9 +182,9 @@ class AudioSubtitleAligner:
             subtitle_times = []
             for sub in subs:
                 start_sec = (sub.start.hours * 3600 + 
-                            sub.start.minutes * 60 + 
-                            sub.start.seconds + 
-                            sub.start.milliseconds / 1000.0)
+                             sub.start.minutes * 60 + 
+                             sub.start.seconds + 
+                             sub.start.milliseconds / 1000.0)
                 subtitle_times.append(start_sec)
             
             return subtitle_times
@@ -500,7 +500,7 @@ class ImprovedGroundTruthTool:
                 content = f.read()
             
             with tempfile.NamedTemporaryFile(mode='w', suffix='.srt', 
-                                             delete=False, encoding='utf-8') as tmp:
+                                            delete=False, encoding='utf-8') as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
             
@@ -936,56 +936,62 @@ class ImprovedGroundTruthTool:
         print("  c = All Correct | m = Manual | h = Chorus")
         print("  x = Not Visible | v = Narration | u = Unknown")
         print("  s = Skip | n = Next | p = Previous | q = Save & Quit")
+        print("  [ESC] = Quit WITHOUT Saving") # Remind user of ESC functionality
         print("="*70)
-        
+
         input("\nPress Enter to start annotating...")
-        
-        annotation_completed = False
-        
+    
+        # We no longer use 'annotation_completed', but a clearer flag
+        aborted_no_save = False
+    
         while self.current_idx < len(self.annotation_points):
             point = self.annotation_points[self.current_idx]
-            
+
             frame, faces = self._get_frame_at_time(point['timestamp'])
-            
+
             if frame is None:
                 print(f"WARNING: Could not read frame, skipping")
                 self.current_idx += 1
                 continue
-            
+
             display_frame = self._prepare_display_frame(frame, point, faces)
             cv2.imshow('Ground Truth Annotation Tool', display_frame)
-            
+
             key = cv2.waitKey(0) & 0xFF
             action = self._handle_key(key, point, faces)
-            
+
             if action == 'quit':
-                self._save_annotations()
-                annotation_completed = True
+                # Press 'q' (save and exit), we just need to break the loop
                 break
             elif action == 'quit_nosave':
-                print("\nERROR: Exiting without saving")
+                # Press 'ESC' (don't save and exit)
+                print("\nABORTED: Exiting without saving")
+                aborted_no_save = True # Set flag
                 break
             elif action == 'next':
                 self.current_idx += 1
                 # Check if we've reached the end
                 if self.current_idx >= len(self.annotation_points):
+                        # Finished, we just need to break the loop
                     print("\n" + "="*70)
                     print("REACHED END OF ANNOTATION POINTS")
                     print("="*70)
-                    self._save_annotations()
-                    annotation_completed = True
                     break
             elif action == 'prev':
                 self.current_idx = max(0, self.current_idx - 1)
-        
+
+        # --- Unified handling after the loop ---
         cv2.destroyAllWindows()
         self.cap.release()
         self.detector.cleanup()
-        
-        if annotation_completed:
+
+        # Only don't save if 'aborted_no_save' (ESC) is True
+        if not aborted_no_save:
+            print("\nAnnotation session complete. Saving annotations...")
+            self._save_annotations()
             self._print_stats()
         else:
-            print("\nAnnotation session ended without completion")
+            print("\nAnnotation session ended without saving.")
     
     def _save_annotations(self):
         """Save annotations"""
@@ -1052,9 +1058,9 @@ def main():
     parser.add_argument('--output', help='Output directory')
     parser.add_argument('--character-names', help='Character names JSON file path')
     parser.add_argument('--time-offset', type=float, default=0.0, 
-                       help='Manual time offset in seconds')
+                        help='Manual time offset in seconds')
     parser.add_argument('--auto-align', action='store_true',
-                       help='Enable automatic audio-subtitle alignment')
+                        help='Enable automatic audio-subtitle alignment')
     
     args = parser.parse_args()
     
