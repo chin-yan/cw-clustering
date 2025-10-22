@@ -12,9 +12,79 @@ import dlib
 import pysrt
 import datetime
 from scipy.spatial import distance
+import colorsys
+import warnings
+import subprocess
+import tempfile
+from collections import defaultdict, Counter
+
+# Suppress numpy warnings from MTCNN
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+np.seterr(divide='ignore', invalid='ignore')
 
 import face_detection
 import feature_extraction
+
+
+def generate_distinct_colors(n):
+    """
+    Generate N visually distinct colors using HSV color space
+    
+    Args:
+        n: Number of colors needed
+        
+    Returns:
+        List of BGR color tuples
+    """
+    colors = []
+    for i in range(n):
+        hue = i / n
+        saturation = 0.8
+        value = 0.9
+        
+        # Convert HSV to RGB
+        rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+        
+        # Convert to BGR for OpenCV (0-255 range)
+        bgr = (int(rgb[2] * 255), int(rgb[1] * 255), int(rgb[0] * 255))
+        colors.append(bgr)
+    
+    return colors
+
+
+class ColorManager:
+    """
+    Manage colors for different character IDs
+    """
+    
+    def __init__(self, n_characters):
+        """
+        Initialize color manager
+        
+        Args:
+            n_characters: Number of characters/clusters
+        """
+        self.colors = generate_distinct_colors(n_characters)
+        self.unknown_color = (128, 128, 128)  # Gray for unknown
+        self.default_color = (255, 255, 255)  # White for narration/not visible
+    
+    def get_color(self, character_id):
+        """
+        Get color for a specific character ID
+        
+        Args:
+            character_id: Character/cluster ID (-1 for unknown)
+            
+        Returns:
+            BGR color tuple
+        """
+        if character_id == -1:
+            return self.unknown_color
+        elif character_id >= 0 and character_id < len(self.colors):
+            return self.colors[character_id]
+        else:
+            return self.unknown_color
+
 
 def load_centers_data(centers_data_path):
     """
@@ -38,7 +108,8 @@ def load_centers_data(centers_data_path):
     print(f"Successfully loaded {len(centers)} cluster centers")
     return centers, center_paths, centers_data
 
-def match_face_with_centers(face_encoding, centers, threshold=0.8):
+
+def match_face_with_centers(face_encoding, centers, threshold=0.65):
     """
     Match a face encoding with the cluster centers
     
@@ -66,6 +137,7 @@ def match_face_with_centers(face_encoding, centers, threshold=0.8):
     else:
         return -1, 0
 
+
 def create_mtcnn_detector(sess):
     """
     Create MTCNN face detector
@@ -81,6 +153,7 @@ def create_mtcnn_detector(sess):
     pnet, rnet, onet = detect_face.create_mtcnn(sess, None)
     return pnet, rnet, onet
 
+
 def init_facial_landmark_detector():
     """
     Initialize the facial landmark detector (dlib)
@@ -89,7 +162,6 @@ def init_facial_landmark_detector():
         Dlib facial landmark predictor
     """
     print("Initializing facial landmark detector...")
-    # Download model file if not exists
     model_path = "shape_predictor_68_face_landmarks.dat"
     if not os.path.exists(model_path):
         print(f"Facial landmark model not found at {model_path}")
@@ -100,9 +172,10 @@ def init_facial_landmark_detector():
     
     return dlib.shape_predictor(model_path)
 
+
 def detect_faces_with_landmarks(frame, pnet, rnet, onet, landmark_predictor, min_face_size=20):
     """
-    Detect faces and their facial landmarks in a frame
+    Detect faces and their facial landmarks in a frame with error handling
     
     Args:
         frame: Input video frame
@@ -115,55 +188,85 @@ def detect_faces_with_landmarks(frame, pnet, rnet, onet, landmark_predictor, min
     """
     import facenet.src.align.detect_face as detect_face
     
-    # Convert frame to RGB (MTCNN uses RGB)
-    if frame.shape[2] == 3:
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    else:
-        frame_rgb = frame
-    
-    # Convert to grayscale for dlib
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # Detect faces
-    bounding_boxes, _ = detect_face.detect_face(
-        frame_rgb, min_face_size, pnet, rnet, onet, [0.6, 0.7, 0.7], 0.7
-    )
-    
-    faces = []
-    
-    # Process each detected face
-    for bbox in bounding_boxes:
-        bbox = bbox.astype(np.int)
+    try:
+        # Convert frame to RGB (MTCNN uses RGB)
+        if frame.shape[2] == 3:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            frame_rgb = frame
         
-        # Extract face area with some margin
-        x1 = max(0, bbox[0] - 10)
-        y1 = max(0, bbox[1] - 10)
-        x2 = min(frame.shape[1], bbox[2] + 10)
-        y2 = min(frame.shape[0], bbox[3] + 10)
+        # Convert to grayscale for dlib
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
-        # Convert bbox to dlib rectangle format
-        rect = dlib.rectangle(x1, y1, x2, y2)
+        # Detect faces with error handling
+        try:
+            bounding_boxes, _ = detect_face.detect_face(
+                frame_rgb, min_face_size, pnet, rnet, onet, [0.6, 0.7, 0.7], 0.7
+            )
+        except (ValueError, RuntimeWarning, ZeroDivisionError):
+            return []
         
-        # Get facial landmarks
-        shape = landmark_predictor(gray, rect)
-        landmarks = []
-        for i in range(68):
-            x = shape.part(i).x
-            y = shape.part(i).y
-            landmarks.append((x, y))
+        # Check if bounding_boxes is valid
+        if bounding_boxes is None or len(bounding_boxes) == 0:
+            return []
         
-        # Get mouth landmarks (indices 48-68)
-        mouth_landmarks = landmarks[48:68]
+        faces = []
         
-        # Store face info
-        faces.append({
-            'bbox': (x1, y1, x2, y2),
-            'landmarks': landmarks,
-            'mouth_landmarks': mouth_landmarks,
-            'rect': rect
-        })
-    
-    return faces
+        # Process each detected face
+        for bbox in bounding_boxes:
+            try:
+                bbox = bbox.astype(np.int)
+                
+                # Validate bbox coordinates
+                if len(bbox) < 4:
+                    continue
+                
+                # Extract face area with some margin
+                x1 = max(0, bbox[0] - 10)
+                y1 = max(0, bbox[1] - 10)
+                x2 = min(frame.shape[1], bbox[2] + 10)
+                y2 = min(frame.shape[0], bbox[3] + 10)
+                
+                # Skip invalid bounding boxes
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                
+                if x1 < 0 or y1 < 0 or x2 > frame.shape[1] or y2 > frame.shape[0]:
+                    continue
+                
+                # Convert bbox to dlib rectangle format
+                rect = dlib.rectangle(x1, y1, x2, y2)
+                
+                # Get facial landmarks
+                try:
+                    shape = landmark_predictor(gray, rect)
+                    landmarks = []
+                    for i in range(68):
+                        x = shape.part(i).x
+                        y = shape.part(i).y
+                        landmarks.append((x, y))
+                    
+                    # Get mouth landmarks (indices 48-68)
+                    mouth_landmarks = landmarks[48:68]
+                    
+                    # Store face info
+                    faces.append({
+                        'bbox': (x1, y1, x2, y2),
+                        'landmarks': landmarks,
+                        'mouth_landmarks': mouth_landmarks,
+                        'rect': rect
+                    })
+                except Exception:
+                    continue
+                    
+            except Exception:
+                continue
+        
+        return faces
+        
+    except Exception:
+        return []
+
 
 def compute_face_encodings_for_frame(frame, faces, sess, images_placeholder, 
                                     embeddings, phase_train_placeholder):
@@ -209,6 +312,7 @@ def compute_face_encodings_for_frame(frame, faces, sess, images_placeholder,
         face['encoding'] = face_encoding
     
     return faces
+
 
 def detect_speaking_face(prev_faces, curr_faces, threshold=0.5):
     """
@@ -272,6 +376,7 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.5):
     else:
         return -1
 
+
 def parse_subtitle_file(subtitle_path):
     """
     Parse subtitle file (SRT format)
@@ -280,7 +385,7 @@ def parse_subtitle_file(subtitle_path):
         subtitle_path: Path to the subtitle file
         
     Returns:
-        List of subtitle entries with start_time, end_time, and text
+        List of subtitle entries
     """
     if not os.path.exists(subtitle_path):
         print(f"Warning: Subtitle file not found: {subtitle_path}")
@@ -293,29 +398,6 @@ def parse_subtitle_file(subtitle_path):
         print(f"Error parsing subtitle file: {e}")
         return []
 
-def get_subtitle_at_time(subtitles, timestamp_ms):
-    """
-    Get subtitle text at a specific timestamp
-    
-    Args:
-        subtitles: List of subtitle entries
-        timestamp_ms: Timestamp in milliseconds
-        
-    Returns:
-        Subtitle text, or None if no subtitle at timestamp
-    """
-    if not subtitles:
-        return None
-    
-    # Convert timestamp to pysrt time format
-    timestamp = datetime.timedelta(milliseconds=timestamp_ms)
-    
-    # Find subtitle at timestamp
-    for subtitle in subtitles:
-        if subtitle.start.ordinal <= timestamp_ms <= subtitle.end.ordinal:
-            return subtitle.text_without_tags
-    
-    return None
 
 def wrap_text(text, max_width=30):
     """
@@ -350,10 +432,245 @@ def wrap_text(text, max_width=30):
     
     return "\n".join(lines)
 
-def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
-                                         subtitle_path, model_dir, detection_interval=2):
+
+def draw_subtitle_near_face(frame, text, bbox, color, position='above'):
     """
-    Annotate video with subtitles near the speaking person
+    Draw subtitle text near a face with background
+    
+    Args:
+        frame: Video frame
+        text: Subtitle text
+        bbox: Face bounding box (x1, y1, x2, y2)
+        color: Text and border color
+        position: 'above' or 'below' the face
+        
+    Returns:
+        Modified frame
+    """
+    x1, y1, x2, y2 = bbox
+    
+    # Wrap text
+    wrapped_text = wrap_text(text, max_width=25)
+    lines = wrapped_text.split('\n')
+    
+    # Calculate text position
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 2
+    line_height = 25
+    
+    # Calculate total text box size
+    max_text_width = 0
+    for line in lines:
+        (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        max_text_width = max(max_text_width, text_width)
+    
+    total_height = line_height * len(lines)
+    
+    # Determine position
+    if position == 'above':
+        text_y = max(30, y1 - 10)
+        text_x = x1
+    else:
+        text_y = min(frame.shape[0] - total_height - 10, y2 + 30)
+        text_x = x1
+    
+    # Ensure text stays within frame
+    text_x = max(5, min(text_x, frame.shape[1] - max_text_width - 10))
+    
+    # Draw background for all lines
+    padding = 8
+    bg_y1 = text_y - line_height - padding
+    bg_y2 = text_y + (len(lines) - 1) * line_height + padding
+    bg_x1 = text_x - padding
+    bg_x2 = text_x + max_text_width + padding
+    
+    # Ensure background stays within frame
+    bg_y1 = max(0, bg_y1)
+    bg_y2 = min(frame.shape[0], bg_y2)
+    bg_x1 = max(0, bg_x1)
+    bg_x2 = min(frame.shape[1], bg_x2)
+    
+    # Draw semi-transparent background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+    
+    # Draw colored border
+    cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
+    
+    # Draw text lines
+    for i, line in enumerate(lines):
+        line_y = text_y + i * line_height
+        cv2.putText(frame, line, (text_x, line_y),
+                   font, font_scale, color, thickness, cv2.LINE_AA)
+    
+    return frame
+
+
+def draw_subtitle_at_bottom(frame, text, color=(255, 255, 255)):
+    """
+    Draw subtitle at bottom center of frame (traditional subtitle position)
+    
+    Args:
+        frame: Video frame
+        text: Subtitle text
+        color: Text color (default white)
+        
+    Returns:
+        Modified frame
+    """
+    if not text:
+        return frame
+    
+    # Wrap text
+    wrapped_text = wrap_text(text, max_width=50)
+    lines = wrapped_text.split('\n')
+    
+    # Settings
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.8
+    thickness = 2
+    line_height = 35
+    
+    # Calculate position (centered at bottom)
+    frame_height, frame_width = frame.shape[:2]
+    
+    # Calculate total text box size
+    max_text_width = 0
+    for line in lines:
+        (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        max_text_width = max(max_text_width, text_width)
+    
+    total_height = line_height * len(lines)
+    
+    # Position at bottom center
+    start_y = frame_height - total_height - 40
+    
+    # Draw background for all lines
+    padding = 12
+    bg_y1 = start_y - line_height + 5
+    bg_y2 = start_y + (len(lines) - 1) * line_height + padding + 5
+    bg_x1 = (frame_width - max_text_width) // 2 - padding
+    bg_x2 = (frame_width + max_text_width) // 2 + padding
+    
+    # Draw semi-transparent black background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+    
+    # Draw text lines (centered)
+    for i, line in enumerate(lines):
+        (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        text_x = (frame_width - text_width) // 2
+        line_y = start_y + i * line_height
+        
+        # Draw text with slight shadow for better readability
+        cv2.putText(frame, line, (text_x + 2, line_y + 2),
+                   font, font_scale, (0, 0, 0), thickness + 1, cv2.LINE_AA)
+        cv2.putText(frame, line, (text_x, line_y),
+                   font, font_scale, color, thickness, cv2.LINE_AA)
+    
+    return frame
+
+
+def determine_speaker_for_subtitle(subtitle, detection_results, fps):
+    """
+    Determine the speaker for an entire subtitle segment using voting
+    
+    Args:
+        subtitle: Subtitle entry from pysrt
+        detection_results: Dictionary mapping frame_idx to detected faces
+        fps: Video frame rate
+        
+    Returns:
+        (speaker_character_id, speaker_bbox) or (None, None) if no speaker found
+    """
+    # Calculate frame range for this subtitle
+    start_ms = subtitle.start.ordinal
+    end_ms = subtitle.end.ordinal
+    
+    start_frame = int((start_ms / 1000.0) * fps)
+    end_frame = int((end_ms / 1000.0) * fps)
+    
+    # Collect all speaking face detections in this time range
+    speaker_votes = Counter()
+    speaker_bboxes = {}
+    
+    for frame_idx in range(start_frame, end_frame + 1):
+        if frame_idx in detection_results:
+            result = detection_results[frame_idx]
+            speaking_idx = result.get('speaking_idx', -1)
+            faces = result.get('faces', [])
+            
+            if speaking_idx >= 0 and speaking_idx < len(faces):
+                speaking_face = faces[speaking_idx]
+                char_id = speaking_face.get('match_idx', -1)
+                
+                if char_id >= 0:
+                    speaker_votes[char_id] += 1
+                    speaker_bboxes[char_id] = speaking_face['bbox']
+    
+    # Use most common speaker
+    if speaker_votes:
+        most_common_speaker = speaker_votes.most_common(1)[0][0]
+        return most_common_speaker, speaker_bboxes.get(most_common_speaker)
+    
+    return None, None
+
+
+def merge_audio_to_video(video_without_audio, original_video, output_video):
+    """
+    Merge audio from original video to annotated video using FFmpeg
+    
+    Args:
+        video_without_audio: Path to video without audio
+        original_video: Path to original video with audio
+        output_video: Path to output video with audio
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    print("\nMerging audio from original video...")
+    
+    try:
+        cmd = [
+            'ffmpeg', '-y',
+            '-i', video_without_audio,
+            '-i', original_video,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
+            output_video
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            print(f"Audio merged successfully: {output_video}")
+            return True
+        else:
+            print(f"FFmpeg failed: {result.stderr}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print("FFmpeg operation timed out")
+        return False
+    except FileNotFoundError:
+        print("FFmpeg not found. Please install FFmpeg to preserve audio.")
+        return False
+    except Exception as e:
+        print(f"Error merging audio: {e}")
+        return False
+
+
+def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
+                                         subtitle_path, model_dir, detection_interval=2,
+                                         similarity_threshold=0.65, preserve_audio=True):
+    """
+    Annotate video with color-coded speaker subtitles with continuous display
     
     Args:
         input_video: Input video path
@@ -362,12 +679,19 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         subtitle_path: Path to subtitle file (SRT format)
         model_dir: FaceNet model directory
         detection_interval: Interval for face detection (process every N frames)
+        similarity_threshold: Threshold for face matching
+        preserve_audio: Whether to preserve original audio
     """
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
     
+    # Initialize color manager
+    color_manager = ColorManager(len(centers))
+    print(f"Initialized color manager with {len(centers)} distinct colors")
+    
     # Parse subtitle file
     subtitles = parse_subtitle_file(subtitle_path)
+    print(f"Loaded {len(subtitles)} subtitles")
     
     # Open input video
     cap = cv2.VideoCapture(input_video)
@@ -380,9 +704,22 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
+    print(f"\nVideo properties:")
+    print(f"  Resolution: {width}x{height}")
+    print(f"  FPS: {fps:.2f}")
+    print(f"  Total frames: {total_frames}")
+    
+    # Create temporary video without audio
+    if preserve_audio:
+        temp_video = output_video.replace('.avi', '_temp_no_audio.avi')
+        final_output = output_video
+    else:
+        temp_video = output_video
+        final_output = None
+    
     # Create output video writer
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
-    out = cv2.VideoWriter(output_video, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
     
     with tf.Graph().as_default():
         with tf.Session() as sess:
@@ -402,30 +739,24 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
             phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
             
-            # Process video frames
-            print(f"Processing video with {total_frames} frames...")
-            frame_count = 0
-            prev_faces = []
-            speaking_face_idx = -1
-            current_subtitle = None
-            processing_times = []
+            # PHASE 1: Detect faces and speakers for all frames
+            print("\n" + "="*70)
+            print("PHASE 1: Detecting faces and identifying speakers")
+            print("="*70)
             
-            # For progress tracking
-            pbar = tqdm(total=total_frames)
+            detection_results = {}
+            prev_faces = []
+            
+            pbar = tqdm(total=total_frames, desc="Detecting")
+            frame_count = 0
             
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
                 
-                start_time = time.time()
-                timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
-                
                 # Process face detection at specified intervals
                 if frame_count % detection_interval == 0:
-                    # Get current subtitle
-                    current_subtitle = get_subtitle_at_time(subtitles, timestamp_ms)
-                    
                     # Detect faces and landmarks
                     faces = detect_faces_with_landmarks(
                         frame, pnet, rnet, onet, landmark_predictor
@@ -441,7 +772,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     for face in faces:
                         if face['encoding'] is not None:
                             match_idx, similarity = match_face_with_centers(
-                                face['encoding'], centers
+                                face['encoding'], centers, threshold=similarity_threshold
                             )
                             face['match_idx'] = match_idx
                             face['similarity'] = similarity
@@ -450,76 +781,150 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                             face['similarity'] = 0
                     
                     # Detect speaking face
+                    speaking_idx = -1
                     if prev_faces:
-                        speaking_face_idx = detect_speaking_face(prev_faces, faces)
+                        speaking_idx = detect_speaking_face(prev_faces, faces)
                     
-                    # Update previous faces
+                    # Store detection result
+                    detection_results[frame_count] = {
+                        'faces': faces,
+                        'speaking_idx': speaking_idx
+                    }
+                    
                     prev_faces = faces
                 
-                # Annotate frame
-                if prev_faces and current_subtitle:
-                    if speaking_face_idx >= 0 and speaking_face_idx < len(prev_faces):
-                        speaking_face = prev_faces[speaking_face_idx]
-                        x1, y1, x2, y2 = speaking_face['bbox']
-                        match_idx = speaking_face.get('match_idx', -1)
-                        
-                        # Draw bounding box for speaking face (yellow)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                        
-                        # Display identity information if matched
-                        if match_idx >= 0:
-                            id_label = f"ID: {match_idx}"
-                            cv2.putText(frame, id_label, (x1, y1 - 30),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                        
-                        # Wrap and display subtitle text above the face
-                        wrapped_text = wrap_text(current_subtitle)
-                        lines = wrapped_text.split('\n')
-                        
-                        # Calculate text position
-                        text_x = x1
-                        text_y = max(30, y1 - 50)  # Ensure text stays in frame
-                        
-                        # Draw subtitle background
-                        for i, line in enumerate(lines):
-                            (text_width, text_height), _ = cv2.getTextSize(
-                                line, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
-                            )
-                            cv2.rectangle(
-                                frame, 
-                                (text_x - 5, text_y - (text_height + 5) * (len(lines) - i)), 
-                                (text_x + text_width + 5, text_y - (text_height + 5) * (len(lines) - i - 1)), 
-                                (0, 0, 0), 
-                                -1
-                            )
-                        
-                        # Draw subtitle text
-                        for i, line in enumerate(lines):
-                            cv2.putText(
-                                frame, 
-                                line, 
-                                (text_x, text_y - (text_height + 5) * (len(lines) - i - 1)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 
-                                0.7, 
-                                (255, 255, 255), 
-                                2
-                            )
-                
-                # Write frame to output
-                out.write(frame)
-                
-                end_time = time.time()
-                processing_times.append(end_time - start_time)
-                
-                # Update progress
                 frame_count += 1
                 pbar.update(1)
+            
+            pbar.close()
+            cap.release()
+            
+            print(f"Detected faces in {len(detection_results)} frames")
+            
+            # PHASE 2: Determine speaker for each subtitle segment
+            print("\n" + "="*70)
+            print("PHASE 2: Determining speakers for subtitle segments")
+            print("="*70)
+            
+            subtitle_speakers = {}
+            
+            for subtitle in tqdm(subtitles, desc="Processing subtitles"):
+                speaker_id, speaker_bbox = determine_speaker_for_subtitle(
+                    subtitle, detection_results, fps
+                )
                 
-                # Print processing stats every 50 frames
-                if frame_count % 50 == 0:
-                    avg_time = np.mean(processing_times[-50:])
-                    fps = 1.0 / avg_time if avg_time > 0 else 0
-                    print(f"\nFrame {frame_count}/{total_frames}, Avg. processing time: {avg_time:.3f}s, FPS: {fps:.2f}")
+                subtitle_speakers[subtitle.index] = {
+                    'speaker_id': speaker_id,
+                    'speaker_bbox': speaker_bbox,
+                    'text': subtitle.text_without_tags,
+                    'start_ms': subtitle.start.ordinal,
+                    'end_ms': subtitle.end.ordinal
+                }
+            
+            print(f"Processed {len(subtitle_speakers)} subtitle segments")
+            
+            # PHASE 3: Render video with continuous subtitles
+            print("\n" + "="*70)
+            print("PHASE 3: Rendering final video with subtitles")
+            print("="*70)
+            
+            # Reopen video for rendering
+            cap = cv2.VideoCapture(input_video)
+            frame_count = 0
+            
+            pbar = tqdm(total=total_frames, desc="Rendering")
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                timestamp_ms = int((frame_count / fps) * 1000)
+                
+                # Find current subtitle
+                current_subtitle = None
+                current_subtitle_info = None
+                
+                for sub_idx, sub_info in subtitle_speakers.items():
+                    if sub_info['start_ms'] <= timestamp_ms <= sub_info['end_ms']:
+                        current_subtitle = sub_info['text']
+                        current_subtitle_info = sub_info
+                        break
+                
+                # Get detected faces for this frame (if available)
+                faces_in_frame = []
+                if frame_count in detection_results:
+                    faces_in_frame = detection_results[frame_count]['faces']
+                
+                # Annotate frame
+                if current_subtitle and current_subtitle_info:
+                    speaker_id = current_subtitle_info['speaker_id']
+                    speaker_bbox = current_subtitle_info['speaker_bbox']
+                    
+                    # If speaker is identified
+                    if speaker_id is not None and speaker_id >= 0:
+                        color = color_manager.get_color(speaker_id)
+                        
+                        # Find speaker's current bbox in frame (if detected)
+                        current_speaker_bbox = None
+                        for face in faces_in_frame:
+                            if face.get('match_idx') == speaker_id:
+                                current_speaker_bbox = face['bbox']
+                                break
+                        
+                        # Use current bbox if available, otherwise use stored bbox
+                        display_bbox = current_speaker_bbox if current_speaker_bbox else speaker_bbox
+                        
+                        if display_bbox:
+                            # Draw speaker's bounding box
+                            x1, y1, x2, y2 = display_bbox
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                            
+                            # Draw ID label
+                            id_label = f"Speaker ID: {speaker_id}"
+                            label_size = cv2.getTextSize(id_label, cv2.FONT_HERSHEY_SIMPLEX, 
+                                                        0.6, 2)[0]
+                            cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), 
+                                        (x1 + label_size[0] + 10, y1), color, -1)
+                            cv2.putText(frame, id_label, (x1 + 5, y1 - 5),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            
+                            # Draw subtitle near speaker
+                            frame = draw_subtitle_near_face(frame, current_subtitle, 
+                                                          display_bbox, color, position='above')
+                        else:
+                            # Speaker bbox not available, show at bottom
+                            frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
+                        
+                        # Draw other faces with their colors
+                        for face in faces_in_frame:
+                            face_id = face.get('match_idx', -1)
+                            if face_id >= 0 and face_id != speaker_id:
+                                face_color = color_manager.get_color(face_id)
+                                fx1, fy1, fx2, fy2 = face['bbox']
+                                cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), face_color, 1)
+                    else:
+                        # No identified speaker - show subtitle at bottom
+                        frame = draw_subtitle_at_bottom(frame, current_subtitle, 
+                                                       color=(255, 255, 255))
+                        
+                        # Still draw detected faces
+                        for face in faces_in_frame:
+                            face_id = face.get('match_idx', -1)
+                            if face_id >= 0:
+                                face_color = color_manager.get_color(face_id)
+                                fx1, fy1, fx2, fy2 = face['bbox']
+                                cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), face_color, 1)
+                
+                # Add frame counter
+                cv2.putText(frame, f"Frame: {frame_count}", (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Write frame
+                out.write(frame)
+                
+                frame_count += 1
+                pbar.update(1)
             
             pbar.close()
     
@@ -527,22 +932,54 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     cap.release()
     out.release()
     
-    print(f"Video annotation with speaker subtitles completed. Output saved to {output_video}")
+    print(f"\nVideo rendering complete: {temp_video}")
+    
+    # Merge audio if requested
+    if preserve_audio and final_output:
+        print("\n" + "="*70)
+        print("PHASE 4: Merging audio from original video")
+        print("="*70)
+        
+        success = merge_audio_to_video(temp_video, input_video, final_output)
+        
+        if success:
+            # Clean up temporary file
+            try:
+                os.remove(temp_video)
+                print(f"Cleaned up temporary file: {temp_video}")
+            except:
+                pass
+            
+            print(f"\n{'='*70}")
+            print("FINAL OUTPUT WITH AUDIO:")
+            print(f"  {final_output}")
+            print("="*70)
+        else:
+            print(f"\nWarning: Audio merging failed. Video without audio saved at:")
+            print(f"  {temp_video}")
+    else:
+        print(f"\n{'='*70}")
+        print("FINAL OUTPUT (NO AUDIO):")
+        print(f"  {temp_video}")
+        print("="*70)
+
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\subtitled_video.avi"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep1.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep1.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
-    # Run video annotation with speaker detection and subtitles
+    # Run video annotation with color-coded speaker subtitles
     annotate_video_with_speaker_subtitles(
         input_video=input_video,
         output_video=output_video,
         centers_data_path=centers_data_path,
         subtitle_path=subtitle_path,
         model_dir=model_dir,
-        detection_interval=2  # Process face detection every 2 frames
+        detection_interval=2,
+        similarity_threshold=0.65,
+        preserve_audio=True  # Set to False if you don't have FFmpeg or don't need audio
     )

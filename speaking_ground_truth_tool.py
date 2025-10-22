@@ -896,6 +896,12 @@ class ImprovedGroundTruthTool:
                     except:
                         continue
             
+            corrected_idx = 0
+            for idx, face in enumerate(faces):
+                if corrected_idx < len(corrected_faces):
+                    faces[idx]['character_id'] = corrected_faces[corrected_idx]
+                    corrected_idx += 1
+            
             if not corrected_faces:
                 print("ERROR: No faces were annotated")
                 return 'stay'
@@ -999,18 +1005,21 @@ class ImprovedGroundTruthTool:
         
         serializable_annotations = {}
         for key, value in self.annotations.items():
+            speaker_ids = value.get('speaker_ids', [])
+            all_faces = value.get('all_faces', [])    
+
             serializable_annotations[key] = {
                 'subtitle_id': int(value.get('subtitle_id', 0)),
                 'position': value.get('position', ''),
                 'timestamp': float(value.get('timestamp', 0.0)),
                 'text': value.get('text', ''),
                 'speaker_id': int(value.get('speaker_id', -1)),
-                'speaker_ids': value.get('speaker_ids', []),
-                'all_faces': value.get('all_faces', []),
+                'speaker_ids': [int(x) for x in speaker_ids],
+                'all_faces': [int(x) for x in all_faces],
                 'status': value.get('status', 'unknown'),
                 'note': value.get('note', '')
             }
-        
+
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_annotations, f, indent=2, ensure_ascii=False)
         
