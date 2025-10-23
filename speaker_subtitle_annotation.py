@@ -173,6 +173,88 @@ def init_facial_landmark_detector():
     return dlib.shape_predictor(model_path)
 
 
+def validate_face_quality(face, frame):
+    """
+    Validate if the detected face is actually a face with good quality
+    
+    Args:
+        face: Face dictionary with bbox and landmarks
+        frame: Video frame
+        
+    Returns:
+        True if face passes quality checks, False otherwise
+    """
+    x1, y1, x2, y2 = face['bbox']
+    
+    # Check 1: Minimum size requirement (avoid tiny detections)
+    face_width = x2 - x1
+    face_height = y2 - y1
+    min_size = 40  # Increased from 20 for more strict detection
+    
+    if face_width < min_size or face_height < min_size:
+        return False
+    
+    # Check 2: Aspect ratio check (faces should be roughly square-ish)
+    aspect_ratio = face_width / face_height
+    if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+        return False
+    
+    # Check 3: Landmarks validation
+    if 'landmarks' not in face or not face['landmarks']:
+        return False
+    
+    landmarks = face['landmarks']
+    
+    # Check if landmarks are within the bounding box
+    # (if too many landmarks are outside, it's likely a false detection)
+    landmarks_inside = 0
+    for lx, ly in landmarks:
+        if x1 <= lx <= x2 and y1 <= ly <= y2:
+            landmarks_inside += 1
+    
+    # At least 80% of landmarks should be inside the bbox
+    if landmarks_inside < len(landmarks) * 0.8:
+        return False
+    
+    # Check 4: Face region should have reasonable variance (not blank/uniform)
+    try:
+        face_region = frame[y1:y2, x1:x2]
+        if face_region.size == 0:
+            return False
+        
+        # Convert to grayscale for variance calculation
+        if len(face_region.shape) == 3:
+            face_gray = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
+        else:
+            face_gray = face_region
+        
+        variance = np.var(face_gray)
+        
+        # If variance is too low, it's likely a uniform region (not a face)
+        if variance < 100:  # Adjust threshold based on testing
+            return False
+    except:
+        return False
+    
+    # Check 5: Verify mouth landmarks form a reasonable mouth shape
+    if 'mouth_landmarks' in face and face['mouth_landmarks']:
+        mouth_landmarks = face['mouth_landmarks']
+        
+        # Calculate mouth width and height
+        mouth_points = np.array(mouth_landmarks)
+        mouth_width = np.max(mouth_points[:, 0]) - np.min(mouth_points[:, 0])
+        mouth_height = np.max(mouth_points[:, 1]) - np.min(mouth_points[:, 1])
+        
+        # Mouth should have reasonable size relative to face
+        if mouth_width < face_width * 0.2 or mouth_width > face_width * 0.8:
+            return False
+        
+        if mouth_height < 5 or mouth_height > face_height * 0.5:
+            return False
+    
+    return True
+
+
 def detect_faces_with_landmarks(frame, pnet, rnet, onet, landmark_predictor, min_face_size=20):
     """
     Detect faces and their facial landmarks in a frame with error handling
@@ -250,12 +332,17 @@ def detect_faces_with_landmarks(frame, pnet, rnet, onet, landmark_predictor, min
                     mouth_landmarks = landmarks[48:68]
                     
                     # Store face info
-                    faces.append({
+                    face_data = {
                         'bbox': (x1, y1, x2, y2),
                         'landmarks': landmarks,
                         'mouth_landmarks': mouth_landmarks,
                         'rect': rect
-                    })
+                    }
+                    
+                    # Validate face quality before adding
+                    if validate_face_quality(face_data, frame):
+                        faces.append(face_data)
+                    
                 except Exception:
                     continue
                     
@@ -314,14 +401,14 @@ def compute_face_encodings_for_frame(frame, faces, sess, images_placeholder,
     return faces
 
 
-def detect_speaking_face(prev_faces, curr_faces, threshold=0.5):
+def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
     """
     Detect which face is currently speaking by analyzing mouth movement
     
     Args:
         prev_faces: Faces detected in previous frame
         curr_faces: Faces detected in current frame
-        threshold: Mouth movement threshold
+        threshold: Mouth movement threshold (increased for stricter detection)
         
     Returns:
         Index of speaking face, or -1 if none
@@ -365,12 +452,34 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.5):
                 movement += distance.euclidean(prev_mouth[i], curr_mouth[i])
             movement /= len(prev_mouth)
             
+            # Additional check: Calculate mouth opening (vertical movement)
+            # Speaking typically involves more vertical mouth movement
+            # Get outer lip landmarks (48-59)
+            if len(prev_mouth) >= 12 and len(curr_mouth) >= 12:
+                # Top lip center (index 3 in outer lip landmarks)
+                prev_top = prev_mouth[3][1]
+                curr_top = curr_mouth[3][1]
+                # Bottom lip center (index 9 in outer lip landmarks)
+                prev_bottom = prev_mouth[9][1]
+                curr_bottom = curr_mouth[9][1]
+                
+                # Calculate mouth opening change
+                prev_opening = abs(prev_bottom - prev_top)
+                curr_opening = abs(curr_bottom - curr_top)
+                opening_change = abs(curr_opening - prev_opening)
+                
+                # Weight movement by opening change (more mouth opening = more likely speaking)
+                weighted_movement = movement * (1 + opening_change / 10.0)
+            else:
+                weighted_movement = movement
+            
             # Update max movement
-            if movement > max_movement:
-                max_movement = movement
+            if weighted_movement > max_movement:
+                max_movement = weighted_movement
                 speaking_idx = curr_idx
     
     # Return speaking face index if movement exceeds threshold
+    # Increased threshold for stricter detection
     if max_movement > threshold:
         return speaking_idx
     else:
@@ -433,9 +542,94 @@ def wrap_text(text, max_width=30):
     return "\n".join(lines)
 
 
+def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
+    """
+    Draw subtitle text beside the character label with stable positioning
+    
+    Args:
+        frame: Video frame
+        text: Subtitle text
+        bbox: Face bounding box (x1, y1, x2, y2)
+        color: Text and border color
+        label_width: Width of the character label (to position subtitle beside it)
+        
+    Returns:
+        Modified frame
+    """
+    x1, y1, x2, y2 = bbox
+    frame_height, frame_width = frame.shape[:2]
+    
+    # Wrap text with reasonable width
+    wrapped_text = wrap_text(text, max_width=30)
+    lines = wrapped_text.split('\n')
+    
+    # Text styling
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.65
+    thickness = 2
+    line_height = 28
+    
+    # Calculate text box size
+    max_text_width = 0
+    for line in lines:
+        (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
+        max_text_width = max(max_text_width, text_width)
+    
+    total_height = line_height * len(lines)
+    padding = 10
+    
+    # Position subtitle to the RIGHT of the character label
+    # Add spacing (20px) between label and subtitle for better readability
+    spacing = 20
+    subtitle_x = x1 + label_width + spacing
+    subtitle_y = y1 - line_height  # Align with top of face bbox
+    
+    # Ensure subtitle stays within frame bounds
+    if subtitle_x + max_text_width + padding * 2 > frame_width:
+        # If goes off right edge, position to the LEFT of the bbox instead
+        subtitle_x = max(padding, x1 - max_text_width - spacing - padding * 2)
+    
+    # Ensure subtitle doesn't go off top
+    subtitle_y = max(line_height + padding, subtitle_y)
+    
+    # Background box coordinates
+    bg_x1 = subtitle_x - padding
+    bg_y1 = subtitle_y - line_height - padding
+    bg_x2 = subtitle_x + max_text_width + padding
+    bg_y2 = subtitle_y + (len(lines) - 1) * line_height + padding
+    
+    # Clamp to frame boundaries
+    bg_x1 = max(0, bg_x1)
+    bg_y1 = max(0, bg_y1)
+    bg_x2 = min(frame_width, bg_x2)
+    bg_y2 = min(frame_height, bg_y2)
+    
+    # Draw semi-transparent black background
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+    
+    # Draw colored border (thinner than bounding box)
+    cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
+    
+    # Draw text lines
+    for i, line in enumerate(lines):
+        line_y = subtitle_y + i * line_height
+        # Draw text with slight shadow for better readability
+        cv2.putText(frame, line, (subtitle_x + 1, line_y + 1),
+                   font, font_scale, (0, 0, 0), thickness + 1, cv2.LINE_AA)
+        cv2.putText(frame, line, (subtitle_x, line_y),
+                   font, font_scale, color, thickness, cv2.LINE_AA)
+    
+    return frame
+
+
 def draw_subtitle_near_face(frame, text, bbox, color, position='above'):
     """
-    Draw subtitle text near a face with background
+    Draw subtitle text near a face with background (DEPRECATED - use draw_subtitle_beside_label)
+    
+    This function is kept for backward compatibility but draw_subtitle_beside_label
+    is preferred for better readability and stability.
     
     Args:
         frame: Video frame
@@ -632,8 +826,15 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
         True if successful, False otherwise
     """
     print("\nMerging audio from original video...")
+    print(f"  Input video (no audio): {video_without_audio}")
+    print(f"  Original video (with audio): {original_video}")
+    print(f"  Output video: {output_video}")
     
     try:
+        # Always use a temporary file for FFmpeg output to avoid conflicts
+        output_dir = os.path.dirname(output_video)
+        temp_ffmpeg_output = os.path.join(output_dir, 'temp_ffmpeg_output.mp4')
+        
         cmd = [
             'ffmpeg', '-y',
             '-i', video_without_audio,
@@ -643,16 +844,31 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
             '-map', '0:v:0',
             '-map', '1:a:0',
             '-shortest',
-            output_video
+            temp_ffmpeg_output
         ]
         
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode == 0:
-            print(f"Audio merged successfully: {output_video}")
-            return True
+            # Move temporary FFmpeg output to final destination
+            try:
+                if os.path.exists(output_video):
+                    os.remove(output_video)
+                os.rename(temp_ffmpeg_output, output_video)
+                print(f"✓ Audio merged successfully!")
+                return True
+            except Exception as e:
+                print(f"Error moving file: {e}")
+                print(f"Temporary file saved at: {temp_ffmpeg_output}")
+                return False
         else:
             print(f"FFmpeg failed: {result.stderr}")
+            # Clean up temp file if it exists
+            if os.path.exists(temp_ffmpeg_output):
+                try:
+                    os.remove(temp_ffmpeg_output)
+                except:
+                    pass
             return False
             
     except subprocess.TimeoutExpired:
@@ -668,7 +884,8 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
 
 def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
                                          subtitle_path, model_dir, detection_interval=2,
-                                         similarity_threshold=0.65, preserve_audio=True):
+                                         similarity_threshold=0.65, speaking_threshold=0.8,
+                                         preserve_audio=True):
     """
     Annotate video with color-coded speaker subtitles with continuous display
     
@@ -679,7 +896,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         subtitle_path: Path to subtitle file (SRT format)
         model_dir: FaceNet model directory
         detection_interval: Interval for face detection (process every N frames)
-        similarity_threshold: Threshold for face matching
+        similarity_threshold: Threshold for face matching (default: 0.65)
+        speaking_threshold: Threshold for speaking detection (default: 0.8, higher = stricter)
         preserve_audio: Whether to preserve original audio
     """
     # Load centers data
@@ -688,6 +906,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     # Initialize color manager
     color_manager = ColorManager(len(centers))
     print(f"Initialized color manager with {len(centers)} distinct colors")
+    print(f"Face matching threshold: {similarity_threshold}")
+    print(f"Speaking detection threshold: {speaking_threshold}")
     
     # Parse subtitle file
     subtitles = parse_subtitle_file(subtitle_path)
@@ -711,8 +931,14 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     
     # Create temporary video without audio
     if preserve_audio:
-        temp_video = output_video.replace('.avi', '_temp_no_audio.avi')
+        # Generate temporary filename that won't conflict
+        output_dir = os.path.dirname(output_video)
+        output_name = os.path.basename(output_video)
+        name_without_ext, ext = os.path.splitext(output_name)
+        temp_video = os.path.join(output_dir, f'{name_without_ext}_temp_no_audio{ext}')
         final_output = output_video
+        print(f"  Temporary video (no audio): {temp_video}")
+        print(f"  Final output (with audio): {final_output}")
     else:
         temp_video = output_video
         final_output = None
@@ -780,10 +1006,10 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                             face['match_idx'] = -1
                             face['similarity'] = 0
                     
-                    # Detect speaking face
+                    # Detect speaking face with configurable threshold
                     speaking_idx = -1
                     if prev_faces:
-                        speaking_idx = detect_speaking_face(prev_faces, faces)
+                        speaking_idx = detect_speaking_face(prev_faces, faces, threshold=speaking_threshold)
                     
                     # Store detection result
                     detection_results[frame_count] = {
@@ -799,7 +1025,16 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             pbar.close()
             cap.release()
             
-            print(f"Detected faces in {len(detection_results)} frames")
+            # Calculate detection statistics
+            total_frames_with_faces = len([r for r in detection_results.values() if r['faces']])
+            total_faces_detected = sum(len(r['faces']) for r in detection_results.values())
+            frames_with_speaking = len([r for r in detection_results.values() if r['speaking_idx'] >= 0])
+            
+            print(f"\nDetection Statistics:")
+            print(f"  Frames processed: {len(detection_results)}")
+            print(f"  Frames with valid faces: {total_frames_with_faces}")
+            print(f"  Total faces detected: {total_faces_detected}")
+            print(f"  Frames with speaking detection: {frames_with_speaking}")
             
             # PHASE 2: Determine speaker for each subtitle segment
             print("\n" + "="*70)
@@ -821,7 +1056,14 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     'end_ms': subtitle.end.ordinal
                 }
             
-            print(f"Processed {len(subtitle_speakers)} subtitle segments")
+            # Calculate speaker statistics
+            identified_speakers = len([s for s in subtitle_speakers.values() if s['speaker_id'] is not None and s['speaker_id'] >= 0])
+            narrations = len(subtitle_speakers) - identified_speakers
+            
+            print(f"\nSubtitle Statistics:")
+            print(f"  Total subtitles: {len(subtitle_speakers)}")
+            print(f"  With identified speaker: {identified_speakers}")
+            print(f"  Narration/No speaker: {narrations}")
             
             # PHASE 3: Render video with continuous subtitles
             print("\n" + "="*70)
@@ -876,22 +1118,36 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                         display_bbox = current_speaker_bbox if current_speaker_bbox else speaker_bbox
                         
                         if display_bbox:
-                            # Draw speaker's bounding box
+                            # Draw speaker's bounding box with thicker line
                             x1, y1, x2, y2 = display_bbox
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 4)
                             
-                            # Draw ID label
-                            id_label = f"Speaker ID: {speaker_id}"
-                            label_size = cv2.getTextSize(id_label, cv2.FONT_HERSHEY_SIMPLEX, 
-                                                        0.6, 2)[0]
-                            cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), 
-                                        (x1 + label_size[0] + 10, y1), color, -1)
-                            cv2.putText(frame, id_label, (x1 + 5, y1 - 5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            # Draw ID label with larger, more visible text
+                            id_label = f"Character {speaker_id}"
+                            label_font = cv2.FONT_HERSHEY_DUPLEX
+                            label_scale = 0.7
+                            label_thickness = 2
+                            label_size = cv2.getTextSize(id_label, label_font, 
+                                                        label_scale, label_thickness)[0]
                             
-                            # Draw subtitle near speaker
-                            frame = draw_subtitle_near_face(frame, current_subtitle, 
-                                                          display_bbox, color, position='above')
+                            # Draw label background (solid colored box)
+                            label_padding = 8
+                            label_width = label_size[0] + label_padding * 2
+                            cv2.rectangle(frame, 
+                                        (x1, y1 - label_size[1] - label_padding * 2), 
+                                        (x1 + label_width, y1), 
+                                        color, -1)
+                            
+                            # Draw white text on colored background
+                            cv2.putText(frame, id_label, 
+                                      (x1 + label_padding, y1 - label_padding),
+                                      label_font, label_scale, (255, 255, 255), 
+                                      label_thickness, cv2.LINE_AA)
+                            
+                            # Draw subtitle BESIDE the label (not overlapping)
+                            # Pass label_width so subtitle can be positioned correctly
+                            frame = draw_subtitle_beside_label(frame, current_subtitle, 
+                                                             display_bbox, color, label_width)
                         else:
                             # Speaker bbox not available, show at bottom
                             frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
@@ -943,15 +1199,16 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         success = merge_audio_to_video(temp_video, input_video, final_output)
         
         if success:
-            # Clean up temporary file
+            # Clean up temporary video file (without audio)
             try:
-                os.remove(temp_video)
-                print(f"Cleaned up temporary file: {temp_video}")
-            except:
-                pass
+                if os.path.exists(temp_video):
+                    os.remove(temp_video)
+                    print(f"✓ Cleaned up temporary file: {os.path.basename(temp_video)}")
+            except Exception as e:
+                print(f"Note: Could not remove temporary file: {e}")
             
             print(f"\n{'='*70}")
-            print("FINAL OUTPUT WITH AUDIO:")
+            print("✓ FINAL OUTPUT WITH AUDIO:")
             print(f"  {final_output}")
             print("="*70)
         else:
@@ -979,7 +1236,8 @@ if __name__ == "__main__":
         centers_data_path=centers_data_path,
         subtitle_path=subtitle_path,
         model_dir=model_dir,
-        detection_interval=2,
-        similarity_threshold=0.65,
-        preserve_audio=True  # Set to False if you don't have FFmpeg or don't need audio
+        detection_interval=2,           # Process every 2 frames
+        similarity_threshold=0.65,      # Face matching threshold
+        speaking_threshold=0.7,         # Speaking detection threshold (0.5-1.5, higher = stricter)
+        preserve_audio=True             # Set to False if you don't have FFmpeg or don't need audio
     )
