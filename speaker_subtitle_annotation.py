@@ -1223,10 +1223,10 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep1.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\color_coded_subtitles.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep1.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep2.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep2\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep2\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep2.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run video annotation with color-coded speaker subtitles

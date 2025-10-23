@@ -282,7 +282,7 @@ class SRTDialogueSplitter:
         """
         Save the processing report.
         """
-        report_path = output_dir / 'split_report.txt'
+        report_path = output_dir / 's2_ep24_split_report.txt'
         report_path.parent.mkdir(parents=True, exist_ok=True)
         
         split_count = 0
