@@ -44,15 +44,60 @@ from enhanced_face_preprocessing import detect_foreground_faces_in_frame
 import facenet.src.align.detect_face as detect_face
 
 
+
 class AudioSubtitleAligner:
-    """Automatic audio-subtitle alignment tool"""
+    """Automatic audio-subtitle alignment tool with VAD support"""
     
-    def __init__(self, video_path, srt_path):
+    def __init__(self, video_path, srt_path, vad_mode='webrtc', aggressiveness=3):
+        """
+        Initialize aligner
+        
+        Args:
+            video_path: Path to video file
+            srt_path: Path to SRT subtitle file
+            vad_mode: 'energy', 'webrtc', or 'silero'
+            aggressiveness: VAD aggressiveness level (0-3 for webrtc)
+        """
         self.video_path = video_path
         self.srt_path = srt_path
+        self.vad_mode = vad_mode
+        self.aggressiveness = aggressiveness
+        
         self.audio_data = None
         self.sample_rate = None
         self.energy_profile = None
+        self.speech_segments = []
+        
+        # Initialize VAD if needed
+        self.vad = None
+        self.vad_model = None
+        
+        if vad_mode == 'webrtc':
+            try:
+                import webrtcvad
+                self.vad = webrtcvad.Vad(aggressiveness)
+                print(f"Using WebRTC VAD (aggressiveness: {aggressiveness})")
+            except ImportError:
+                print("Warning: webrtcvad not available, falling back to energy-based detection")
+                self.vad_mode = 'energy'
+        
+        elif vad_mode == 'silero':
+            try:
+                import torch
+                self.vad_model, utils = torch.hub.load(
+                    repo_or_dir='snakers4/silero-vad',
+                    model='silero_vad',
+                    force_reload=False,
+                    onnx=False
+                )
+                self.get_speech_timestamps = utils[0]
+                print("Using Silero VAD (deep learning model)")
+            except Exception as e:
+                print(f"Warning: Silero VAD not available ({e}), falling back to energy-based detection")
+                self.vad_mode = 'energy'
+        
+        elif vad_mode == 'energy':
+            print("Using energy-based detection")
         
     def extract_audio(self):
         """Extract audio from video"""
@@ -60,7 +105,7 @@ class AudioSubtitleAligner:
             print("Error: librosa is required for audio alignment")
             return False
             
-        print("\nExtracting audio from video...")
+        print("\n[1/4] Extracting audio from video...")
         
         try:
             # Create temporary audio file
@@ -71,7 +116,7 @@ class AudioSubtitleAligner:
             cmd = [
                 'ffmpeg', '-i', self.video_path, '-vn', 
                 '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1',
-                '-y', temp_audio_path
+                '-y', temp_audio_path, '-loglevel', 'error'
             ]
             
             result = subprocess.run(cmd, capture_output=True, stderr=subprocess.PIPE)
@@ -89,19 +134,121 @@ class AudioSubtitleAligner:
             except:
                 pass
             
-            print(f"Audio extracted: {len(self.audio_data)/self.sample_rate:.2f}s at {self.sample_rate}Hz")
+            duration = len(self.audio_data) / self.sample_rate
+            print(f"   ✓ Audio extracted: {duration:.2f}s at {self.sample_rate}Hz")
             return True
             
         except Exception as e:
             print(f"Error extracting audio: {e}")
             return False
     
+    def detect_speech_with_webrtc(self):
+        """Detect speech segments using WebRTC VAD"""
+        print("\n[2/4] Detecting speech with WebRTC VAD...")
+        
+        # WebRTC VAD requires 10, 20, or 30 ms frames
+        frame_duration_ms = 30
+        frame_length = int(self.sample_rate * frame_duration_ms / 1000)
+        
+        # Convert float audio to int16
+        audio_int16 = (self.audio_data * 32767).astype(np.int16)
+        
+        speech_frames = []
+        num_frames = len(audio_int16) // frame_length
+        
+        for i in tqdm(range(num_frames), desc="   Processing frames"):
+            start = i * frame_length
+            end = start + frame_length
+            frame = audio_int16[start:end].tobytes()
+            
+            try:
+                is_speech = self.vad.is_speech(frame, self.sample_rate)
+                timestamp = start / self.sample_rate
+                
+                speech_frames.append({
+                    'timestamp': timestamp,
+                    'is_speech': is_speech
+                })
+            except:
+                continue
+        
+        # Merge consecutive speech frames into segments
+        self.speech_segments = self._merge_speech_frames(speech_frames, min_duration=0.3)
+        
+        print(f"   ✓ Detected {len(self.speech_segments)} speech segments")
+        return True
+    
+    def detect_speech_with_silero(self):
+        """Detect speech segments using Silero VAD"""
+        print("\n[2/4] Detecting speech with Silero VAD...")
+        
+        import torch
+        
+        # Convert to torch tensor
+        audio_tensor = torch.from_numpy(self.audio_data).float()
+        
+        # Get speech timestamps
+        speech_timestamps = self.get_speech_timestamps(
+            audio_tensor,
+            self.vad_model,
+            sampling_rate=self.sample_rate,
+            threshold=0.5,
+            min_speech_duration_ms=250,
+            min_silence_duration_ms=100,
+            return_seconds=True
+        )
+        
+        # Convert to our format
+        self.speech_segments = []
+        for segment in speech_timestamps:
+            self.speech_segments.append({
+                'start': segment['start'],
+                'end': segment['end'],
+                'duration': segment['end'] - segment['start']
+            })
+        
+        print(f"   ✓ Detected {len(self.speech_segments)} speech segments")
+        return True
+    
+    def _merge_speech_frames(self, speech_frames, min_duration=0.3):
+        """Merge consecutive speech frames into segments"""
+        if not speech_frames:
+            return []
+        
+        segments = []
+        current_segment = None
+        
+        for frame in speech_frames:
+            if frame['is_speech']:
+                if current_segment is None:
+                    current_segment = {
+                        'start': frame['timestamp'],
+                        'end': frame['timestamp']
+                    }
+                else:
+                    current_segment['end'] = frame['timestamp']
+            else:
+                if current_segment is not None:
+                    duration = current_segment['end'] - current_segment['start']
+                    if duration >= min_duration:
+                        current_segment['duration'] = duration
+                        segments.append(current_segment)
+                    current_segment = None
+        
+        if current_segment is not None:
+            duration = current_segment['end'] - current_segment['start']
+            if duration >= min_duration:
+                current_segment['duration'] = duration
+                segments.append(current_segment)
+        
+        return segments
+    
     def compute_energy_profile(self, window_size=0.02, hop_size=0.01):
-        """Compute energy profile of audio signal"""
+        """Compute energy profile of audio signal (legacy energy-based method)"""
         if self.audio_data is None:
             return False
         
-        print("Computing audio energy profile...")
+        print("\n[2/4] Computing audio energy profile...")
         
         # Frame-based energy calculation
         frame_length = int(window_size * self.sample_rate)
@@ -128,11 +275,11 @@ class AudioSubtitleAligner:
         mad = np.median(np.abs(self.energy_profile['energies'] - median_energy))
         self.energy_profile['threshold'] = median_energy + 2.5 * mad
         
-        print(f"Energy profile computed: {len(energies)} frames")
+        print(f"   ✓ Energy profile computed: {len(energies)} frames")
         return True
     
     def detect_speech_onsets(self):
-        """Detect speech onset times from energy profile"""
+        """Detect speech onset times from energy profile (legacy method)"""
         if self.energy_profile is None:
             return []
         
@@ -147,13 +294,12 @@ class AudioSubtitleAligner:
         in_speech = False
         for i in range(len(is_speech)):
             if is_speech[i] and not in_speech:
-                # Speech onset
                 onsets.append(timestamps[i])
                 in_speech = True
             elif not is_speech[i] and in_speech:
                 in_speech = False
         
-        print(f"Detected {len(onsets)} speech onsets")
+        print(f"   ✓ Detected {len(onsets)} speech onsets")
         return onsets
     
     def load_subtitle_times(self):
@@ -187,6 +333,7 @@ class AudioSubtitleAligner:
                              sub.start.milliseconds / 1000.0)
                 subtitle_times.append(start_sec)
             
+            print(f"\n[3/4] Loaded {len(subtitle_times)} subtitles")
             return subtitle_times
             
         except Exception as e:
@@ -194,12 +341,13 @@ class AudioSubtitleAligner:
             return []
     
     def calculate_optimal_offset(self, subtitle_times, speech_onsets, 
-                                 max_offset=5.0, step=0.05):
+                                 max_offset=5.0, step=0.02):
         """Calculate optimal time offset by matching subtitle times to speech onsets"""
         if not subtitle_times or not speech_onsets:
             return 0.0
         
-        print("\nCalculating optimal time offset...")
+        print(f"\n[4/4] Calculating optimal time offset...")
+        print(f"   Testing range: [{-max_offset:.2f}, {max_offset:.2f}]s (step: {step:.3f}s)")
         
         # Try different offsets
         best_offset = 0.0
@@ -207,63 +355,78 @@ class AudioSubtitleAligner:
         
         offset_range = np.arange(-max_offset, max_offset + step, step)
         
-        for offset in tqdm(offset_range, desc="Testing offsets"):
+        for offset in tqdm(offset_range, desc="   Testing offsets"):
             # Apply offset to subtitle times
             adjusted_times = [t + offset for t in subtitle_times]
             
             # Calculate matching score
             score = 0
+            tolerance = 0.5  # 500ms tolerance
+            
             for sub_time in adjusted_times:
                 # Find nearest speech onset
                 distances = [abs(sub_time - onset) for onset in speech_onsets]
                 min_distance = min(distances) if distances else float('inf')
                 
                 # Score based on distance (closer is better)
-                if min_distance < 0.5:  # Within 0.5 seconds
-                    score += 1.0 - (min_distance / 0.5)
+                if min_distance < tolerance:
+                    score += 1.0 - (min_distance / tolerance)
+            
+            # Normalize score
+            score = score / len(subtitle_times) if subtitle_times else 0
             
             if score > best_score:
                 best_score = score
                 best_offset = offset
         
-        match_percentage = (best_score / len(subtitle_times)) * 100 if subtitle_times else 0
+        match_percentage = best_score * 100
         
-        print(f"\nOptimal offset found: {best_offset:.3f} seconds")
-        print(f"Match quality: {match_percentage:.1f}%")
+        print(f"\n   ✓ Optimal offset: {best_offset:.3f} seconds")
+        print(f"   Match quality: {match_percentage:.1f}%")
         
         return best_offset
     
-    def visualize_alignment(self, subtitle_times, speech_onsets, offset):
-        """Create visualization of alignment (text-based)"""
-        print("\n" + "="*70)
-        print("ALIGNMENT VISUALIZATION")
-        print("="*70)
-        
-        # Show first 10 subtitle times and nearest speech onsets
-        print("\nSample alignment (first 10 subtitles):")
-        print(f"{'Subtitle':<12} {'Original':<12} {'Adjusted':<12} {'Nearest Onset':<15} {'Distance':<10}")
-        print("-" * 70)
-        
-        adjusted_times = [t + offset for t in subtitle_times[:10]]
-        
-        for i, (orig_time, adj_time) in enumerate(zip(subtitle_times[:10], adjusted_times)):
-            # Find nearest onset
-            distances = [abs(adj_time - onset) for onset in speech_onsets]
-            if distances:
-                min_idx = np.argmin(distances)
-                nearest_onset = speech_onsets[min_idx]
-                distance = distances[min_idx]
-                
-                print(f"Sub #{i+1:<6} {orig_time:<12.3f} {adj_time:<12.3f} "
-                      f"{nearest_onset:<15.3f} {distance:<10.3f}")
-            else:
-                print(f"Sub #{i+1:<6} {orig_time:<12.3f} {adj_time:<12.3f} "
-                      f"{'N/A':<15} {'N/A':<10}")
-        
-        print("="*70)
-    
     def run_alignment(self):
-        """Run complete alignment process"""
+        """Run the complete alignment process"""
+        print("\n" + "="*70)
+        print(f"Audio-Subtitle Alignment (Mode: {self.vad_mode.upper()})")
+        print("="*70)
+        
+        # Step 1: Extract audio
+        if not self.extract_audio():
+            return 0.0
+        
+        # Step 2: Detect speech
+        if self.vad_mode == 'webrtc' and self.vad is not None:
+            if not self.detect_speech_with_webrtc():
+                return 0.0
+            speech_onsets = [seg['start'] for seg in self.speech_segments]
+        
+        elif self.vad_mode == 'silero' and self.vad_model is not None:
+            if not self.detect_speech_with_silero():
+                return 0.0
+            speech_onsets = [seg['start'] for seg in self.speech_segments]
+        
+        else:  # energy-based fallback
+            if not self.compute_energy_profile():
+                return 0.0
+            speech_onsets = self.detect_speech_onsets()
+        
+        # Step 3: Load subtitles
+        subtitle_times = self.load_subtitle_times()
+        if not subtitle_times:
+            return 0.0
+        
+        # Step 4: Calculate offset
+        offset = self.calculate_optimal_offset(subtitle_times, speech_onsets)
+        
+        print("\n" + "="*70)
+        print(f"✓ Alignment Complete!")
+        print(f"Recommended time offset: {offset:.3f} seconds")
+        print("="*70)
+        
+        return offset
+
         print("\n" + "="*70)
         print("AUTOMATIC AUDIO-SUBTITLE ALIGNMENT")
         print("="*70)
@@ -416,7 +579,7 @@ class ImprovedGroundTruthTool:
     
     def __init__(self, video_path, srt_path, model_dir, centers_data_path, 
                  output_dir, character_names=None, time_offset=0.0, 
-                 auto_align=False):
+                 auto_align=False, vad_mode='webrtc', vad_aggressiveness=3):
         self.video_path = video_path
         self.srt_path = srt_path
         self.output_dir = Path(output_dir)
@@ -424,6 +587,8 @@ class ImprovedGroundTruthTool:
         self.character_names = character_names or {}
         self.time_offset = time_offset
         self.auto_align = auto_align
+        self.vad_mode = vad_mode
+        self.vad_aggressiveness = vad_aggressiveness
         
         # Perform auto-alignment if requested
         if self.auto_align and LIBROSA_AVAILABLE:
@@ -1070,6 +1235,12 @@ def main():
                         help='Manual time offset in seconds')
     parser.add_argument('--auto-align', action='store_true',
                         help='Enable automatic audio-subtitle alignment')
+    parser.add_argument('--vad-mode', choices=['energy', 'webrtc', 'silero'],
+                        default='webrtc',
+                        help='VAD method for auto-alignment (default: webrtc)')
+    parser.add_argument('--vad-aggressiveness', type=int, default=3,
+                        choices=[0, 1, 2, 3],
+                        help='WebRTC VAD aggressiveness level 0-3 (default: 3)')
     
     args = parser.parse_args()
     

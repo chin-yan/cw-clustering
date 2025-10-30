@@ -86,6 +86,76 @@ class ColorManager:
             return self.unknown_color
 
 
+
+
+class BBoxSmoother:
+    """
+    Smooth bounding box positions using Exponential Moving Average (EMA)
+    to reduce jitter and flickering in subtitle positions
+    """
+    
+    def __init__(self, initial_bbox, alpha=0.3):
+        """
+        Initialize bbox smoother with initial position
+        
+        Args:
+            initial_bbox: Initial bounding box (x1, y1, x2, y2)
+            alpha: Smoothing factor (0-1). Lower values = more smoothing
+                   0.1 = very smooth, slow to adapt
+                   0.3 = balanced (recommended)
+                   0.5 = less smooth, faster adaptation
+                   1.0 = no smoothing (raw bbox)
+        """
+        if initial_bbox is None:
+            self.smoothed_bbox = None
+        else:
+            self.smoothed_bbox = [float(x) for x in initial_bbox]
+        self.alpha = alpha
+        self.initialized = (initial_bbox is not None)
+    
+    def update(self, new_bbox):
+        """
+        Update and return smoothed bounding box
+        
+        Args:
+            new_bbox: New detected bbox (x1, y1, x2, y2) or None
+            
+        Returns:
+            Smoothed bbox as tuple of integers (x1, y1, x2, y2)
+            Returns None if smoother is not initialized
+        """
+        if new_bbox is None:
+            # No new detection, return current smoothed position
+            if self.smoothed_bbox is None:
+                return None
+            return tuple(int(round(x)) for x in self.smoothed_bbox)
+        
+        if not self.initialized:
+            # First bbox, initialize directly
+            self.smoothed_bbox = [float(x) for x in new_bbox]
+            self.initialized = True
+            return tuple(int(round(x)) for x in self.smoothed_bbox)
+        
+        # Apply Exponential Moving Average: smoothed = alpha * new + (1 - alpha) * old
+        for i in range(4):
+            self.smoothed_bbox[i] = (
+                self.alpha * new_bbox[i] + 
+                (1 - self.alpha) * self.smoothed_bbox[i]
+            )
+        
+        return tuple(int(round(x)) for x in self.smoothed_bbox)
+    
+    def get_current(self):
+        """
+        Get current smoothed bbox without updating
+        
+        Returns:
+            Current smoothed bbox or None
+        """
+        if self.smoothed_bbox is None:
+            return None
+        return tuple(int(round(x)) for x in self.smoothed_bbox)
+
 def load_centers_data(centers_data_path):
     """
     Load previously saved cluster center data
@@ -565,7 +635,7 @@ def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
     
     # Text styling
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.65
+    font_scale = 0.8
     thickness = 2
     line_height = 28
     
@@ -622,85 +692,6 @@ def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
                    font, font_scale, color, thickness, cv2.LINE_AA)
     
     return frame
-
-
-def draw_subtitle_near_face(frame, text, bbox, color, position='above'):
-    """
-    Draw subtitle text near a face with background (DEPRECATED - use draw_subtitle_beside_label)
-    
-    This function is kept for backward compatibility but draw_subtitle_beside_label
-    is preferred for better readability and stability.
-    
-    Args:
-        frame: Video frame
-        text: Subtitle text
-        bbox: Face bounding box (x1, y1, x2, y2)
-        color: Text and border color
-        position: 'above' or 'below' the face
-        
-    Returns:
-        Modified frame
-    """
-    x1, y1, x2, y2 = bbox
-    
-    # Wrap text
-    wrapped_text = wrap_text(text, max_width=25)
-    lines = wrapped_text.split('\n')
-    
-    # Calculate text position
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.6
-    thickness = 2
-    line_height = 25
-    
-    # Calculate total text box size
-    max_text_width = 0
-    for line in lines:
-        (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
-        max_text_width = max(max_text_width, text_width)
-    
-    total_height = line_height * len(lines)
-    
-    # Determine position
-    if position == 'above':
-        text_y = max(30, y1 - 10)
-        text_x = x1
-    else:
-        text_y = min(frame.shape[0] - total_height - 10, y2 + 30)
-        text_x = x1
-    
-    # Ensure text stays within frame
-    text_x = max(5, min(text_x, frame.shape[1] - max_text_width - 10))
-    
-    # Draw background for all lines
-    padding = 8
-    bg_y1 = text_y - line_height - padding
-    bg_y2 = text_y + (len(lines) - 1) * line_height + padding
-    bg_x1 = text_x - padding
-    bg_x2 = text_x + max_text_width + padding
-    
-    # Ensure background stays within frame
-    bg_y1 = max(0, bg_y1)
-    bg_y2 = min(frame.shape[0], bg_y2)
-    bg_x1 = max(0, bg_x1)
-    bg_x2 = min(frame.shape[1], bg_x2)
-    
-    # Draw semi-transparent background
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
-    
-    # Draw colored border
-    cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
-    
-    # Draw text lines
-    for i, line in enumerate(lines):
-        line_y = text_y + i * line_height
-        cv2.putText(frame, line, (text_x, line_y),
-                   font, font_scale, color, thickness, cv2.LINE_AA)
-    
-    return frame
-
 
 def draw_subtitle_at_bottom(frame, text, color=(255, 255, 255)):
     """
@@ -885,7 +876,7 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
 def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
                                          subtitle_path, model_dir, detection_interval=2,
                                          similarity_threshold=0.65, speaking_threshold=0.8,
-                                         preserve_audio=True):
+                                         preserve_audio=True, smoothing_alpha=0.3):
     """
     Annotate video with color-coded speaker subtitles with continuous display
     
@@ -899,6 +890,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         similarity_threshold: Threshold for face matching (default: 0.65)
         speaking_threshold: Threshold for speaking detection (default: 0.8, higher = stricter)
         preserve_audio: Whether to preserve original audio
+        smoothing_alpha: Smoothing factor for bbox positions (0-1, default: 0.3)
+                         Lower = more smoothing, higher = faster adaptation
     """
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
@@ -908,6 +901,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     print(f"Initialized color manager with {len(centers)} distinct colors")
     print(f"Face matching threshold: {similarity_threshold}")
     print(f"Speaking detection threshold: {speaking_threshold}")
+    print(f"BBox smoothing alpha: {smoothing_alpha}")
     
     # Parse subtitle file
     subtitles = parse_subtitle_file(subtitle_path)
@@ -1048,9 +1042,15 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     subtitle, detection_results, fps
                 )
                 
+                # Don't initialize BBoxSmoother yet - wait for first face detection in PHASE 3
+                # This prevents bbox from appearing before the face is actually detected
+                bbox_smoother = None
+                
                 subtitle_speakers[subtitle.index] = {
                     'speaker_id': speaker_id,
                     'speaker_bbox': speaker_bbox,
+                    'bbox_smoother': bbox_smoother,
+                    'smoothing_alpha': smoothing_alpha,  # Store alpha for later initialization
                     'text': subtitle.text_without_tags,
                     'start_ms': subtitle.start.ordinal,
                     'end_ms': subtitle.end.ordinal
@@ -1114,8 +1114,22 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                                 current_speaker_bbox = face['bbox']
                                 break
                         
-                        # Use current bbox if available, otherwise use stored bbox
-                        display_bbox = current_speaker_bbox if current_speaker_bbox else speaker_bbox
+                        # Initialize or update BBoxSmoother
+                        bbox_smoother = current_subtitle_info.get('bbox_smoother')
+                        
+                        # Only initialize smoother when we first detect the speaker's face
+                        if bbox_smoother is None and current_speaker_bbox is not None:
+                            # First detection - initialize smoother with current bbox
+                            smoothing_alpha = current_subtitle_info.get('smoothing_alpha', 0.3)
+                            bbox_smoother = BBoxSmoother(current_speaker_bbox, alpha=smoothing_alpha)
+                            current_subtitle_info['bbox_smoother'] = bbox_smoother
+                            display_bbox = current_speaker_bbox
+                        elif bbox_smoother is not None:
+                            # Smoother already initialized - update with current detection
+                            display_bbox = bbox_smoother.update(current_speaker_bbox)
+                        else:
+                            # No smoother and no detection - don't show bbox
+                            display_bbox = None
                         
                         if display_bbox:
                             # Draw speaker's bounding box with thicker line
@@ -1223,10 +1237,10 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep2.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep2\color_coded_subtitles.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep2\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep2.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep7.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep7\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep7\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep7.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run video annotation with color-coded speaker subtitles
