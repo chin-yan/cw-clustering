@@ -208,7 +208,7 @@ def detect_foreground_faces_in_frame(frame, pnet, rnet, onet, min_face_size=60,
     
     # If no detection, try again with lower threshold (consistent with clustering stage)
     if len(bounding_boxes) == 0:
-        side_threshold = [0.5, 0.6, 0.7]
+        side_threshold = [0.5, 0.6, 0.7] 
         bounding_boxes, _ = detect_face.detect_face(
             frame_rgb, min_face_size * 0.8, pnet, rnet, onet, side_threshold, 0.6
         )

@@ -9,6 +9,7 @@ from tqdm import tqdm
 import re
 from scipy.spatial import distance
 import math
+import random
 
 def face_distance(face_encodings, face_to_compare):
     """
@@ -349,7 +350,7 @@ def _post_process_clusters(clusters, facial_encodings, frame_info, merge_thresho
                 max_samples = 5
                 sample_i = clusters[i][:min(max_samples, len(clusters[i]))]
                 sample_j = clusters[j][:min(max_samples, len(clusters[j]))]
-                
+
                 # Calculate average similarity between samples
                 total_sim = 0
                 count = 0

@@ -11,6 +11,7 @@ import math
 import dlib
 import pysrt
 import datetime
+import json
 from scipy.spatial import distance
 import colorsys
 import warnings
@@ -84,8 +85,6 @@ class ColorManager:
             return self.colors[character_id]
         else:
             return self.unknown_color
-
-
 
 
 class BBoxSmoother:
@@ -769,7 +768,7 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
         fps: Video frame rate
         
     Returns:
-        (speaker_character_id, speaker_bbox) or (None, None) if no speaker found
+        (speaker_character_id, speaker_bbox, all_speaker_ids, all_faces_info) tuple
     """
     # Calculate frame range for this subtitle
     start_ms = subtitle.start.ordinal
@@ -781,12 +780,31 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
     # Collect all speaking face detections in this time range
     speaker_votes = Counter()
     speaker_bboxes = {}
+    all_speaker_ids = []
+    all_faces_data = []
     
     for frame_idx in range(start_frame, end_frame + 1):
         if frame_idx in detection_results:
             result = detection_results[frame_idx]
             speaking_idx = result.get('speaking_idx', -1)
             faces = result.get('faces', [])
+            
+            # Collect all face IDs in this frame
+            frame_face_ids = []
+            for face in faces:
+                face_id = face.get('match_idx', -1)
+                if face_id >= 0:
+                    frame_face_ids.append({
+                        'face_id': face_id,
+                        'bbox': face['bbox'],
+                        'similarity': face.get('similarity', 0)
+                    })
+            
+            if frame_face_ids:
+                all_faces_data.append({
+                    'frame_idx': frame_idx,
+                    'faces': frame_face_ids
+                })
             
             if speaking_idx >= 0 and speaking_idx < len(faces):
                 speaking_face = faces[speaking_idx]
@@ -795,13 +813,16 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
                 if char_id >= 0:
                     speaker_votes[char_id] += 1
                     speaker_bboxes[char_id] = speaking_face['bbox']
+                    all_speaker_ids.append(char_id)
     
     # Use most common speaker
     if speaker_votes:
         most_common_speaker = speaker_votes.most_common(1)[0][0]
-        return most_common_speaker, speaker_bboxes.get(most_common_speaker)
+        # Get unique speaker IDs
+        unique_speaker_ids = list(set(all_speaker_ids))
+        return most_common_speaker, speaker_bboxes.get(most_common_speaker), unique_speaker_ids, all_faces_data
     
-    return None, None
+    return None, None, [], all_faces_data
 
 
 def merge_audio_to_video(video_without_audio, original_video, output_video):
@@ -846,7 +867,7 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
                 if os.path.exists(output_video):
                     os.remove(output_video)
                 os.rename(temp_ffmpeg_output, output_video)
-                print(f"✓ Audio merged successfully!")
+                print(f"Audio merged successfully!")
                 return True
             except Exception as e:
                 print(f"Error moving file: {e}")
@@ -873,10 +894,60 @@ def merge_audio_to_video(video_without_audio, original_video, output_video):
         return False
 
 
+def convert_to_json_serializable(obj):
+    """
+    Convert NumPy and other non-serializable types to JSON-serializable types
+    
+    Args:
+        obj: Object to convert
+        
+    Returns:
+        JSON-serializable version of the object
+    """
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_json_serializable(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_to_json_serializable(item) for item in obj)
+    else:
+        return obj
+
+
+def save_annotation_json(json_data, output_path):
+    """
+    Save annotation data to JSON file with proper formatting
+    
+    Args:
+        json_data: Dictionary containing annotation data
+        output_path: Path to save JSON file
+    """
+    try:
+        # Convert all NumPy types to native Python types
+        serializable_data = convert_to_json_serializable(json_data)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(serializable_data, f, indent=2, ensure_ascii=False)
+        print(f"[OK] JSON annotation saved: {output_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to save JSON annotation: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
                                          subtitle_path, model_dir, detection_interval=2,
                                          similarity_threshold=0.65, speaking_threshold=0.8,
-                                         preserve_audio=True, smoothing_alpha=0.3):
+                                         preserve_audio=True, smoothing_alpha=0.3,
+                                         generate_json=True):
     """
     Annotate video with color-coded speaker subtitles with continuous display
     
@@ -892,6 +963,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         preserve_audio: Whether to preserve original audio
         smoothing_alpha: Smoothing factor for bbox positions (0-1, default: 0.3)
                          Lower = more smoothing, higher = faster adaptation
+        generate_json: Whether to generate JSON annotation file (default: True)
     """
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
@@ -902,6 +974,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     print(f"Face matching threshold: {similarity_threshold}")
     print(f"Speaking detection threshold: {speaking_threshold}")
     print(f"BBox smoothing alpha: {smoothing_alpha}")
+    print(f"Generate JSON annotation: {generate_json}")
     
     # Parse subtitle file
     subtitles = parse_subtitle_file(subtitle_path)
@@ -940,6 +1013,9 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     # Create output video writer
     fourcc = cv2.VideoWriter_fourcc(*'XVID')
     out = cv2.VideoWriter(temp_video, fourcc, fps, (width, height))
+    
+    # JSON annotation data structure
+    json_annotations = {}
     
     with tf.Graph().as_default():
         with tf.Session() as sess:
@@ -1038,7 +1114,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             subtitle_speakers = {}
             
             for subtitle in tqdm(subtitles, desc="Processing subtitles"):
-                speaker_id, speaker_bbox = determine_speaker_for_subtitle(
+                speaker_id, speaker_bbox, speaker_ids, all_faces = determine_speaker_for_subtitle(
                     subtitle, detection_results, fps
                 )
                 
@@ -1046,15 +1122,69 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 # This prevents bbox from appearing before the face is actually detected
                 bbox_smoother = None
                 
+                # Calculate timestamps
+                start_timestamp = subtitle.start.ordinal / 1000.0
+                end_timestamp = subtitle.end.ordinal / 1000.0
+                
                 subtitle_speakers[subtitle.index] = {
                     'speaker_id': speaker_id,
                     'speaker_bbox': speaker_bbox,
+                    'speaker_ids': speaker_ids if speaker_ids else [],
+                    'all_faces': all_faces,
                     'bbox_smoother': bbox_smoother,
-                    'smoothing_alpha': smoothing_alpha,  # Store alpha for later initialization
+                    'smoothing_alpha': smoothing_alpha,
                     'text': subtitle.text_without_tags,
                     'start_ms': subtitle.start.ordinal,
-                    'end_ms': subtitle.end.ordinal
+                    'end_ms': subtitle.end.ordinal,
+                    'start_timestamp': start_timestamp,
+                    'end_timestamp': end_timestamp
                 }
+                
+                # Prepare JSON annotation entries
+                if generate_json:
+                    # Start entry
+                    start_key = f"{subtitle.index}_start"
+                    
+                    # Convert speaker_id to native Python int or None
+                    json_speaker_id = None
+                    if speaker_id is not None and speaker_id >= 0:
+                        json_speaker_id = int(speaker_id)
+                    
+                    # Convert speaker_ids list to native Python ints
+                    json_speaker_ids = [int(sid) for sid in speaker_ids] if speaker_ids else []
+                    
+                    json_annotations[start_key] = {
+                        'subtitle_id': int(subtitle.index),
+                        'position': 'start',
+                        'timestamp': round(float(start_timestamp), 3),
+                        'text': subtitle.text_without_tags,
+                        'speaker_id': json_speaker_id,
+                        'speaker_ids': json_speaker_ids,
+                        'all_faces': [],  # Will be populated with simplified face data
+                        'status': 'unknown',  # Will be determined below
+                        'note': ''
+                    }
+                    
+                    # Determine status
+                    if speaker_id is not None and speaker_id >= 0:
+                        json_annotations[start_key]['status'] = 'speaker_identified'
+                    elif all_faces:
+                        json_annotations[start_key]['status'] = 'faces_detected_no_speaker'
+                    else:
+                        json_annotations[start_key]['status'] = 'speaker_not_visible'
+                    
+                    # Populate all_faces with simplified data (sample from frames)
+                    if all_faces:
+                        # Take first frame with faces as representative
+                        first_frame_faces = all_faces[0]['faces']
+                        json_annotations[start_key]['all_faces'] = [
+                            {
+                                'face_id': int(face['face_id']),
+                                'bbox': [int(x) for x in face['bbox']],
+                                'similarity': float(round(face['similarity'], 3))
+                            }
+                            for face in first_frame_faces
+                        ]
             
             # Calculate speaker statistics
             identified_speakers = len([s for s in subtitle_speakers.values() if s['speaker_id'] is not None and s['speaker_id'] >= 0])
@@ -1204,6 +1334,11 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     
     print(f"\nVideo rendering complete: {temp_video}")
     
+    # Save JSON annotation if requested
+    if generate_json and json_annotations:
+        json_output_path = output_video.replace('.mp4', '_annotation.json')
+        save_annotation_json(json_annotations, json_output_path)
+    
     # Merge audio if requested
     if preserve_audio and final_output:
         print("\n" + "="*70)
@@ -1217,13 +1352,15 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             try:
                 if os.path.exists(temp_video):
                     os.remove(temp_video)
-                    print(f"✓ Cleaned up temporary file: {os.path.basename(temp_video)}")
+                    print(f"Cleaned up temporary file: {os.path.basename(temp_video)}")
             except Exception as e:
                 print(f"Note: Could not remove temporary file: {e}")
             
             print(f"\n{'='*70}")
-            print("✓ FINAL OUTPUT WITH AUDIO:")
-            print(f"  {final_output}")
+            print("FINAL OUTPUT WITH AUDIO:")
+            print(f"  Video: {final_output}")
+            if generate_json:
+                print(f"  JSON: {json_output_path}")
             print("="*70)
         else:
             print(f"\nWarning: Audio merging failed. Video without audio saved at:")
@@ -1231,16 +1368,18 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     else:
         print(f"\n{'='*70}")
         print("FINAL OUTPUT (NO AUDIO):")
-        print(f"  {temp_video}")
+        print(f"  Video: {temp_video}")
+        if generate_json:
+            print(f"  JSON: {json_output_path}")
         print("="*70)
 
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep7.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep7\color_coded_subtitles.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep7\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep7.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep10.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep10\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep10\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep10.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run video annotation with color-coded speaker subtitles
@@ -1253,5 +1392,6 @@ if __name__ == "__main__":
         detection_interval=2,           # Process every 2 frames
         similarity_threshold=0.65,      # Face matching threshold
         speaking_threshold=0.7,         # Speaking detection threshold (0.5-1.5, higher = stricter)
-        preserve_audio=True             # Set to False if you don't have FFmpeg or don't need audio
+        preserve_audio=True,            # Set to False if you don't have FFmpeg or don't need audio
+        generate_json=True              # Generate JSON annotation file
     )

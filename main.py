@@ -23,273 +23,9 @@ import speaking_face_annotation
 import enhanced_face_retrieval
 import enhanced_video_annotation
 import cluster_post_processing
+import speaker_subtitle_annotation
 
 tf.disable_v2_behavior()
-
-# ============================================================================
-# AUDIO PROCESSING FUNCTIONS
-# ============================================================================
-
-def check_ffmpeg_available():
-    """
-    Check if FFmpeg is available
-    
-    Returns:
-        bool: True if FFmpeg is available, False otherwise
-    """
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], 
-                              capture_output=True, text=True, timeout=5)
-        return result.returncode == 0
-    except:
-        return False
-
-def simple_audio_test(video_path):
-    """
-    Test if video has audio using FFmpeg
-    
-    Args:
-        video_path: Path to video file
-        
-    Returns:
-        bool: True if audio detected, False otherwise
-    """
-    try:
-        temp_audio = f"temp_audio_test_{int(time.time())}.wav"
-        
-        cmd = [
-            'ffmpeg', '-y', '-i', video_path, '-t', '1',
-            '-vn', '-acodec', 'pcm_s16le', temp_audio
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        
-        has_audio = False
-        if os.path.exists(temp_audio):
-            size = os.path.getsize(temp_audio)
-            has_audio = size > 1000  # At least 1KB for 1 second of audio
-            
-            # Clean up
-            try:
-                os.remove(temp_audio)
-            except:
-                pass
-        
-        return has_audio
-        
-    except Exception as e:
-        return False
-
-def merge_audio_to_video(video_without_audio, video_with_audio, output_video_with_audio):
-    """
-    Merge audio from one video to another video
-    
-    Args:
-        video_without_audio: Path to video file without audio
-        video_with_audio: Path to video file with audio (audio source)
-        output_video_with_audio: Path to output video file with audio
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    print(f"🎵 Merging audio...")
-    print(f"   Video source: {os.path.basename(video_without_audio)}")
-    print(f"   Audio source: {os.path.basename(video_with_audio)}")
-    print(f"   Output: {os.path.basename(output_video_with_audio)}")
-    
-    # Validate inputs
-    if not os.path.exists(video_without_audio):
-        print(f"❌ Video file not found: {video_without_audio}")
-        return False
-    
-    if not os.path.exists(video_with_audio):
-        print(f"❌ Audio source file not found: {video_with_audio}")
-        return False
-    
-    if not check_ffmpeg_available():
-        print("❌ FFmpeg not available")
-        return False
-    
-    # Test if audio source has audio
-    if not simple_audio_test(video_with_audio):
-        print("❌ Audio source has no audio!")
-        return False
-    
-    # Ensure output directory exists
-    output_dir = os.path.dirname(output_video_with_audio)
-    if output_dir and not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # Ensure output file is different from inputs
-    if os.path.abspath(output_video_with_audio) == os.path.abspath(video_without_audio):
-        print("❌ Output file cannot be the same as input video file")
-        return False
-    
-    try:
-        # Use the successful strategy from your manual test
-        cmd = [
-            'ffmpeg', '-y',
-            '-i', video_without_audio,  # Video source
-            '-i', video_with_audio,     # Audio source
-            '-c:v', 'copy',             # Copy video without re-encoding
-            '-c:a', 'aac',              # Encode audio to AAC
-            '-map', '0:v:0',            # Map video from first input
-            '-map', '1:a:0',            # Map audio from second input
-            '-shortest',                # Use shortest duration
-            output_video_with_audio
-        ]
-        
-        print(f"🔄 Running FFmpeg...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode == 0:
-            # Verify output
-            if os.path.exists(output_video_with_audio):
-                size = os.path.getsize(output_video_with_audio)
-                if size > 1024:  # At least 1KB
-                    # Test if output has audio
-                    if simple_audio_test(output_video_with_audio):
-                        print(f"✅ Audio successfully merged!")
-                        print(f"📁 Output: {output_video_with_audio}")
-                        print(f"📊 Size: {size / (1024*1024):.2f} MB")
-                        return True
-                    else:
-                        print("❌ Output file has no audio")
-                        return False
-                else:
-                    print("❌ Output file is too small")
-                    return False
-            else:
-                print("❌ Output file not created")
-                return False
-        else:
-            print(f"❌ FFmpeg failed with return code: {result.returncode}")
-            if result.stderr:
-                error_lines = result.stderr.strip().split('\n')
-                print(f"Error: {error_lines[-1]}")
-            return False
-            
-    except subprocess.TimeoutExpired:
-        print("❌ FFmpeg operation timed out")
-        return False
-    except Exception as e:
-        print(f"❌ Audio merging failed: {e}")
-        return False
-
-# ============================================================================
-# MODIFIED VIDEO ANNOTATION FUNCTIONS
-# ============================================================================
-
-def create_annotated_video_mp4(input_video, output_video_mp4, centers_data_path, model_dir,
-                              detection_interval=2, similarity_threshold=0.55, 
-                              temporal_weight=0.3, preserve_audio=True):
-    """
-    Create annotated video in MP4 format with optional audio preservation
-    
-    Args:
-        input_video: Path to input video file
-        output_video_mp4: Path to output MP4 video file
-        centers_data_path: Path to cluster centers data file
-        model_dir: Directory containing FaceNet model
-        detection_interval: Process every N frames for detection
-        similarity_threshold: Minimum similarity threshold for face matching
-        temporal_weight: Weight for temporal consistency
-        preserve_audio: Whether to preserve original audio
-    
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    print(f"🎬 Creating annotated video...")
-    print(f"   Input: {os.path.basename(input_video)}")
-    print(f"   Output: {os.path.basename(output_video_mp4)}")
-    print(f"   Preserve audio: {preserve_audio}")
-    
-    if preserve_audio:
-        # Step 1: Create temporary video without audio
-        temp_silent_video = output_video_mp4.replace('.mp4', f'_temp_silent_{int(time.time())}.avi')
-        
-        try:
-            # Create annotated video without audio
-            print("📹 Step 1: Creating annotated video (without audio)...")
-            enhanced_video_annotation.annotate_video_with_enhanced_detection(
-                input_video=input_video,
-                output_video=temp_silent_video,
-                centers_data_path=centers_data_path,
-                model_dir=model_dir,
-                detection_interval=detection_interval,
-                similarity_threshold=similarity_threshold,
-                temporal_weight=temporal_weight
-            )
-            
-            # Check if temporary video was created
-            if not os.path.exists(temp_silent_video):
-                print(f"❌ Temporary annotated video not created")
-                return False
-            
-            temp_size = os.path.getsize(temp_silent_video)
-            print(f"✅ Temporary video created ({temp_size / (1024*1024):.2f} MB)")
-            
-            # Step 2: Merge audio
-            print("🎵 Step 2: Adding audio from original video...")
-            success = merge_audio_to_video(temp_silent_video, input_video, output_video_mp4)
-            
-            # Clean up temporary file
-            try:
-                if os.path.exists(temp_silent_video):
-                    os.remove(temp_silent_video)
-                    print(f"🗑️ Cleaned up temporary file")
-            except:
-                pass
-            
-            if not success:
-                print("⚠️ Audio merging failed, but annotated video was created")
-                # As fallback, convert temp video to MP4 without audio
-                try:
-                    fallback_cmd = [
-                        'ffmpeg', '-y', '-i', temp_silent_video,
-                        '-c:v', 'libx264', '-crf', '23',
-                        output_video_mp4.replace('.mp4', '_no_audio.mp4')
-                    ]
-                    subprocess.run(fallback_cmd, capture_output=True, timeout=120)
-                except:
-                    pass
-            
-            return success
-            
-        except Exception as e:
-            print(f"❌ Error creating annotated video: {e}")
-            # Clean up
-            try:
-                if os.path.exists(temp_silent_video):
-                    os.remove(temp_silent_video)
-            except:
-                pass
-            return False
-    
-    else:
-        # Create video without audio preservation
-        print("📹 Creating annotated video without audio preservation...")
-        try:
-            enhanced_video_annotation.annotate_video_with_enhanced_detection(
-                input_video=input_video,
-                output_video=output_video_mp4,
-                centers_data_path=centers_data_path,
-                model_dir=model_dir,
-                detection_interval=detection_interval,
-                similarity_threshold=similarity_threshold,
-                temporal_weight=temporal_weight
-            )
-            
-            if os.path.exists(output_video_mp4):
-                print(f"✅ Annotated video created: {output_video_mp4}")
-                return True
-            else:
-                print("❌ Failed to create annotated video")
-                return False
-                
-        except Exception as e:
-            print(f"❌ Error creating annotated video: {e}")
-            return False
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -306,7 +42,7 @@ def create_directories(output_dir):
 
 def extract_frames(video_path, output_dir, interval=30):
     """Extract frames from video at specified intervals"""
-    print("🎞️ Extracting frames from video...")
+    print("Extracting frames from video...")
     cap = cv2.VideoCapture(video_path)
     frame_count = 0
     frames_paths = []
@@ -324,17 +60,26 @@ def extract_frames(video_path, output_dir, interval=30):
         frame_count += 1
     
     cap.release()
-    print(f"✅ Extracted {len(frames_paths)} frames")
+    print(f"Extracted {len(frames_paths)} frames")
     return frames_paths
 
 def check_file_exists(file_path, description="File"):
     """Check if file exists and print status"""
     if os.path.exists(file_path):
         size = os.path.getsize(file_path)
-        print(f"✅ {description}: {file_path} ({size / (1024*1024):.2f} MB)")
+        print(f"[OK] {description}: {file_path} ({size / (1024*1024):.2f} MB)")
         return True
     else:
-        print(f"❌ {description} not found: {file_path}")
+        print(f"[ERROR] {description} not found: {file_path}")
+        return False
+
+def check_ffmpeg_available():
+    """Check if FFmpeg is available"""
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except:
         return False
 
 # ============================================================================
@@ -343,26 +88,29 @@ def check_file_exists(file_path, description="File"):
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Video face clustering system with MP4 output and audio preservation')
+    parser = argparse.ArgumentParser(description='Video face clustering system with speaker-aware subtitle annotation')
     
     # Basic arguments
-    parser.add_argument('--input_video', type=str, 
-                        default=r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4",
+    parser.add_argument('--input_video', type=str, required=True,
                         help='Input video path')
-    parser.add_argument('--output_dir', type=str,
-                        default=r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_0831",
+    parser.add_argument('--output_dir', type=str, required=True,
                         help='Output directory')
-    parser.add_argument('--model_dir', type=str,
-                        default=r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759",
+    parser.add_argument('--model_dir', type=str, required=True,
                         help='FaceNet model directory')
+    
+    # Subtitle annotation arguments
+    parser.add_argument('--subtitle_file', type=str, default=None,
+                        help='Path to subtitle file (SRT format). If provided, will create speaker-aware subtitle annotation')
     
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=100, help='Batch size for feature extraction')
     parser.add_argument('--face_size', type=int, default=160, help='Face image size')
     parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
-    parser.add_argument('--similarity_threshold', type=float, default=0.5, help='Face similarity threshold')
+    parser.add_argument('--similarity_threshold', type=float, default=0.65, help='Face similarity threshold for matching')
     parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
+    parser.add_argument('--speaking_threshold', type=float, default=0.7, 
+                        help='Speaking detection threshold (0.5-1.5, higher = stricter)')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -373,35 +121,49 @@ def parse_arguments():
     parser.add_argument('--visualize', action='store_true', default=True, help='Create visualization')
     parser.add_argument('--do_retrieval', action='store_true', default=True, help='Perform face retrieval')
     parser.add_argument('--enhanced_retrieval', action='store_true', default=True, help='Use enhanced retrieval')
-    parser.add_argument('--enhanced_annotation', action='store_true', default=True, help='Use enhanced annotation')
     
     # Audio and output options
     parser.add_argument('--preserve_audio', action='store_true', default=True, help='Preserve original audio')
-    parser.add_argument('--detection_interval', type=int, default=2, help='Face detection frame interval')
+    parser.add_argument('--detection_interval', type=int, default=2, help='Face detection frame interval for annotation')
+    parser.add_argument('--smoothing_alpha', type=float, default=0.3,
+                        help='BBox smoothing factor for subtitle annotation (0-1, lower=more smooth)')
+    parser.add_argument('--generate_json', action='store_true', default=True,
+                        help='Generate JSON annotation file alongside video (default: True)')
+    
+    # Legacy annotation option (if no subtitle file provided)
+    parser.add_argument('--use_legacy_annotation', action='store_true', default=False,
+                        help='Use legacy annotation style without subtitles (only if subtitle_file not provided)')
     
     return parser.parse_args()
 
 def main():
-    """Main function for video face clustering and annotation with MP4 output"""
+    """Main function for video face clustering and annotation with speaker-aware subtitles"""
     args = parse_arguments()
     
-    print("🚀 Video Face Clustering and Annotation System (MP4 + Audio)")
+    print("=" * 70)
+    print("VIDEO FACE CLUSTERING AND ANNOTATION SYSTEM")
     print("=" * 70)
     
     # Check input requirements
-    print("📋 Checking requirements...")
+    print("\nChecking requirements...")
     if not check_file_exists(args.input_video, "Input video"):
         return
     
     if not check_file_exists(args.model_dir, "FaceNet model directory"):
         return
     
+    # Check subtitle file if provided
+    if args.subtitle_file:
+        if not check_file_exists(args.subtitle_file, "Subtitle file"):
+            print("Warning: Subtitle file not found. Will proceed without subtitle annotation.")
+            args.subtitle_file = None
+    
     # Check FFmpeg if audio preservation is requested
     if args.preserve_audio:
         if check_ffmpeg_available():
-            print("✅ FFmpeg available for audio processing")
+            print("[OK] FFmpeg available for audio processing")
         else:
-            print("⚠️ FFmpeg not available, audio will not be preserved")
+            print("[WARNING] FFmpeg not available, audio will not be preserved")
             args.preserve_audio = False
     
     # Create output directories
@@ -410,24 +172,24 @@ def main():
     # ========================================================================
     # PHASE 1: FACE CLUSTERING
     # ========================================================================
-    print("\n" + "="*50)
+    print("\n" + "="*70)
     print("PHASE 1: FACE CLUSTERING")
-    print("="*50)
+    print("="*70)
     
     # Extract frames
     frames_paths = extract_frames(args.input_video, dirs['faces'], args.frames_interval)
     
     with tf.Graph().as_default():
         with tf.Session() as sess:
-            print(f"🔧 Using clustering method: {args.method}")
+            print(f"\nUsing clustering method: {args.method}")
             
             # Step 1: Face detection
-            print("\n👤 Step 1: Detecting faces...")
+            print("\nStep 1: Detecting faces...")
             if args.method in ['adjusted', 'hybrid']:
                 from speaking_based_filter import detect_faces_with_speaking_filter
                 face_paths = detect_faces_with_speaking_filter(
                     sess, frames_paths, dirs['faces'], 
-                    video_path=args.input_video,  # Add video path for audio
+                    video_path=args.input_video,
                     min_face_size=60, face_size=args.face_size
                 )
             else:
@@ -437,19 +199,19 @@ def main():
                 )
                 
             # Step 1.5: Quality filtering
-            print("\n🔍 Step 1.5: Filtering low-quality faces...")
+            print("\nStep 1.5: Filtering low-quality faces...")
             from face_quality_filter import integrate_quality_filter_with_main
 
-            face_paths = integrate_quality_filter_with_main(face_paths, args.output_dir, strict_mode= False)
+            face_paths = integrate_quality_filter_with_main(face_paths, args.output_dir, strict_mode=False)
 
             if len(face_paths) == 0:
-                print("❌ Face image that failed quality check!")
+                print("[ERROR] No faces passed quality check!")
                 return
 
-            print(f"✅ Quality check completed, {len(face_paths)} high-quality face images retained")
+            print(f"[OK] Quality check completed, {len(face_paths)} high-quality face images retained")
 
             # Step 2: Feature extraction
-            print("\n🧠 Step 2: Extracting facial features...")
+            print("\nStep 2: Extracting facial features...")
             model_dir = os.path.expanduser(args.model_dir)
             feature_extraction.load_model(sess, model_dir)
              
@@ -469,7 +231,7 @@ def main():
             )
             
             # Step 3: Clustering
-            print("\n🎯 Step 3: Clustering faces...")
+            print("\nStep 3: Clustering faces...")
             if args.method == 'adjusted':
                 clusters = clustering.cluster_facial_encodings(
                     facial_encodings, 
@@ -496,12 +258,9 @@ def main():
                 adjusted_std = np.std(adjusted_sizes) / np.mean(adjusted_sizes) if np.mean(adjusted_sizes) > 0 else float('inf')
                 
                 if len(adjusted_clusters) > 0 and len(original_clusters) > 0:
-                    # 計算每個結果的質量分數
                     original_avg_size = np.mean([len(c) for c in original_clusters])
                     adjusted_avg_size = np.mean([len(c) for c in adjusted_clusters])
                     
-                    # 偏好 cluster 數量較少的結果
-                    # 只有當 adjusted 的 cluster 數明顯較少,或質量明顯更好時才選擇它
                     if (len(adjusted_clusters) <= len(original_clusters) * 0.7 or 
                         (len(adjusted_clusters) <= len(original_clusters) and 
                         adjusted_std < original_std * 0.8)):
@@ -519,39 +278,35 @@ def main():
                     facial_encodings, threshold=args.cluster_threshold
                 )
             
-            # Step 4: Post-processing - Aggressive merging for same person across different scenes
-            print("\n🔧 Step 4: Post-processing clusters...")
+            # Step 4: Post-processing
+            print("\nStep 4: Post-processing clusters...")
             
-            # Apply aggressive small-to-large cluster merging
             processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
                 clusters, facial_encodings,
-                min_large_cluster_size=50,  # Large cluster threshold
-                small_cluster_percentage=0.08,  # Small clusters = 8% of total faces
-                merge_threshold=0.4,  # Much lower base threshold for aggressive merging
-                max_merges_per_cluster=15,  # Allow more merges per large cluster
+                min_large_cluster_size=50,
+                small_cluster_percentage=0.08,
+                merge_threshold=0.4,
+                max_merges_per_cluster=15,
                 safety_checks=True
             )
             
-            # Update clusters to processed results
             clusters = processed_clusters
             
-            print(f"✅ Post-processing completed:")
+            print(f"[OK] Post-processing completed:")
             print(f"   Merge actions: {len(merge_actions)}")
             for action in merge_actions:
-                # All merge actions now use consistent naming: cluster_i (target), cluster_j (source)
                 source_cluster = action.get('cluster_j', 'unknown')
                 target_cluster = action.get('cluster_i', 'unknown')
                 faces_added = action.get('faces_added', 'unknown')
                 
-                # Get the appropriate score based on action type
                 score = action.get('confidence', action.get('similarity', 0))
                 action_type = action.get('type', 'merge')
                 
-                print(f"   {action_type}: Cluster {source_cluster} → Cluster {target_cluster} "
+                print(f"   {action_type}: Cluster {source_cluster} -> Cluster {target_cluster} "
                       f"(+{faces_added} faces, score: {score:.3f})")
 
             # Step 5: Save clustering results
-            print(f"\n💾 Saving {len(clusters)} clusters...")
+            print(f"\nSaving {len(clusters)} clusters...")
             for idx, cluster in enumerate(clusters):
                 cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
                 if not os.path.exists(cluster_dir):
@@ -562,7 +317,7 @@ def main():
                     shutil.copy2(face_path, dst_path)
 
             # Step 6: Calculate cluster centers
-            print("\n🎯 Step 6: Calculating cluster centers...")
+            print("\nStep 6: Calculating cluster centers...")
             if args.method in ['adjusted', 'hybrid']:
                 cluster_centers = clustering.find_cluster_centers_adjusted(
                     clusters, facial_encodings, method='min_distance'
@@ -583,28 +338,26 @@ def main():
             with open(centers_data_path, 'wb') as f:
                 pickle.dump(centers_data, f)
             
-            print(f"✅ Cluster centers saved to: {centers_data_path}")
+            print(f"[OK] Cluster centers saved to: {centers_data_path}")
             
             # Visualization
             if args.visualize:
-                print("\n📊 Step 7: Creating visualizations...")
+                print("\nStep 7: Creating visualizations...")
                 visualization.visualize_clusters(
                     clusters, facial_encodings, cluster_centers, 
                     dirs['visualization']
                 )
     
     # ========================================================================
-    # PHASE 2: VIDEO ANNOTATION WITH AUDIO
+    # PHASE 2: FACE RETRIEVAL (Optional)
     # ========================================================================
-    print("\n" + "="*50)
-    print("PHASE 2: VIDEO ANNOTATION WITH AUDIO")
-    print("="*50)
-    
     if args.do_retrieval:
-        print("\n🔍 Face retrieval and video annotation...")
+        print("\n" + "="*70)
+        print("PHASE 2: FACE RETRIEVAL")
+        print("="*70)
         
         if args.enhanced_retrieval:
-            print("Using enhanced face retrieval...")
+            print("\nUsing enhanced face retrieval...")
             enhanced_face_retrieval.enhanced_face_retrieval(
                 video_path=args.input_video,
                 centers_data_path=centers_data_path,
@@ -617,60 +370,122 @@ def main():
                 similarity_threshold=args.similarity_threshold,
                 temporal_weight=args.temporal_weight
             )
-        
-        # Create final annotated video with audio
-        final_output_video = os.path.join(args.output_dir, 'annotated_video_with_audio.mp4')
-        
-        print(f"\n🎬 Creating final annotated video...")
-        success = create_annotated_video_mp4(
-            input_video=args.input_video,
-            output_video_mp4=final_output_video,
-            centers_data_path=centers_data_path,
-            model_dir=args.model_dir,
-            detection_interval=args.detection_interval,
-            similarity_threshold=args.similarity_threshold,
-            temporal_weight=args.temporal_weight,
-            preserve_audio=args.preserve_audio
-        )
-        
-        if success:
-            print(f"🎉 SUCCESS! Final video created: {final_output_video}")
-            
-            # Verify final output
-            if check_file_exists(final_output_video, "Final annotated video"):
-                if args.preserve_audio:
-                    has_audio = simple_audio_test(final_output_video)
-                    if has_audio:
-                        print("✅ Final video has audio!")
-                    else:
-                        print("⚠️ Final video has no audio")
-        else:
-            print("❌ Failed to create final annotated video")
     
-    print("\n🎊 Processing completed!")
-    print("=" * 50)
+    # ========================================================================
+    # PHASE 3: VIDEO ANNOTATION WITH SPEAKER-AWARE SUBTITLES
+    # ========================================================================
+    print("\n" + "="*70)
+    print("PHASE 3: VIDEO ANNOTATION")
+    print("="*70)
+    
+    if args.subtitle_file:
+        # Use speaker-aware subtitle annotation
+        print("\nCreating video with speaker-aware subtitle annotation...")
+        print(f"Subtitle file: {args.subtitle_file}")
+        print(f"Face matching threshold: {args.similarity_threshold}")
+        print(f"Speaking detection threshold: {args.speaking_threshold}")
+        print(f"BBox smoothing alpha: {args.smoothing_alpha}")
+        print(f"Generate JSON annotation: {args.generate_json}")
+        
+        output_video = os.path.join(args.output_dir, 'speaker_subtitle_annotated_video.mp4')
+        
+        try:
+            speaker_subtitle_annotation.annotate_video_with_speaker_subtitles(
+                input_video=args.input_video,
+                output_video=output_video,
+                centers_data_path=centers_data_path,
+                subtitle_path=args.subtitle_file,
+                model_dir=args.model_dir,
+                detection_interval=args.detection_interval,
+                similarity_threshold=args.similarity_threshold,
+                speaking_threshold=args.speaking_threshold,
+                preserve_audio=args.preserve_audio,
+                smoothing_alpha=args.smoothing_alpha,
+                generate_json=args.generate_json
+            )
+            
+            print(f"\n[SUCCESS] Speaker-aware subtitle annotation completed!")
+            print(f"Output video: {output_video}")
+            
+        except Exception as e:
+            print(f"\n[ERROR] Failed to create speaker-aware subtitle annotation: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    elif args.use_legacy_annotation:
+        # Use legacy annotation without subtitles
+        print("\nCreating video with legacy annotation (no subtitles)...")
+        
+        output_video = os.path.join(args.output_dir, 'annotated_video.avi')
+        
+        try:
+            enhanced_video_annotation.annotate_video_with_enhanced_detection(
+                input_video=args.input_video,
+                output_video=output_video,
+                centers_data_path=centers_data_path,
+                model_dir=args.model_dir,
+                detection_interval=args.detection_interval,
+                similarity_threshold=args.similarity_threshold,
+                temporal_weight=args.temporal_weight
+            )
+            
+            print(f"\n[SUCCESS] Legacy annotation completed!")
+            print(f"Output video: {output_video}")
+            
+        except Exception as e:
+            print(f"\n[ERROR] Failed to create legacy annotation: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    else:
+        print("\n[INFO] No video annotation requested.")
+        print("To create annotated video:")
+        print("  - Provide --subtitle_file for speaker-aware subtitle annotation (recommended)")
+        print("  - Or use --use_legacy_annotation for basic face annotation")
+    
+    # ========================================================================
+    # COMPLETION
+    # ========================================================================
+    print("\n" + "="*70)
+    print("PROCESSING COMPLETED")
+    print("="*70)
     
     # Final summary
-    print("\n📁 Final Output:")
+    print("\nFinal Output:")
+    print(f"- Clustering results: {dirs['clusters']}")
+    print(f"- Cluster centers: {centers_data_path}")
+    
+    if args.visualize:
+        print(f"- Visualizations: {dirs['visualization']}")
+    
     if args.do_retrieval:
-        final_video = os.path.join(args.output_dir, 'annotated_video_with_audio.mp4')
-        if os.path.exists(final_video):
-            size = os.path.getsize(final_video) / (1024*1024)
-            print(f"🎬 Annotated video: {final_video} ({size:.1f} MB)")
+        print(f"- Face retrieval: {dirs['retrieval']}")
+    
+    if args.subtitle_file:
+        output_video = os.path.join(args.output_dir, 'speaker_subtitle_annotated_video.mp4')
+        if os.path.exists(output_video):
+            size = os.path.getsize(output_video) / (1024*1024)
+            print(f"- Annotated video: {output_video} ({size:.1f} MB)")
             
-            if args.preserve_audio and simple_audio_test(final_video):
-                print("🎵 ✅ Audio preserved successfully!")
-            elif args.preserve_audio:
-                print("🎵 ⚠️ Audio not detected in final video")
+            # Check for JSON annotation file
+            json_path = output_video.replace('.mp4', '_annotation.json')
+            if args.generate_json and os.path.exists(json_path):
+                json_size = os.path.getsize(json_path) / 1024
+                print(f"- JSON annotation: {json_path} ({json_size:.1f} KB)")
+    elif args.use_legacy_annotation:
+        output_video = os.path.join(args.output_dir, 'annotated_video.avi')
+        if os.path.exists(output_video):
+            size = os.path.getsize(output_video) / (1024*1024)
+            print(f"- Annotated video: {output_video} ({size:.1f} MB)")
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n❌ Process interrupted by user")
+        print("\n[ERROR] Process interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
+        print(f"\n[ERROR] Fatal error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
