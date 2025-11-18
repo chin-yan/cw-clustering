@@ -258,7 +258,7 @@ def validate_face_quality(face, frame):
     # Check 1: Minimum size requirement (avoid tiny detections)
     face_width = x2 - x1
     face_height = y2 - y1
-    min_size = 40  # Increased from 20 for more strict detection
+    min_size = 40
     
     if face_width < min_size or face_height < min_size:
         return False
@@ -275,7 +275,6 @@ def validate_face_quality(face, frame):
     landmarks = face['landmarks']
     
     # Check if landmarks are within the bounding box
-    # (if too many landmarks are outside, it's likely a false detection)
     landmarks_inside = 0
     for lx, ly in landmarks:
         if x1 <= lx <= x2 and y1 <= ly <= y2:
@@ -300,7 +299,7 @@ def validate_face_quality(face, frame):
         variance = np.var(face_gray)
         
         # If variance is too low, it's likely a uniform region (not a face)
-        if variance < 100:  # Adjust threshold based on testing
+        if variance < 100:
             return False
     except:
         return False
@@ -522,8 +521,6 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
             movement /= len(prev_mouth)
             
             # Additional check: Calculate mouth opening (vertical movement)
-            # Speaking typically involves more vertical mouth movement
-            # Get outer lip landmarks (48-59)
             if len(prev_mouth) >= 12 and len(curr_mouth) >= 12:
                 # Top lip center (index 3 in outer lip landmarks)
                 prev_top = prev_mouth[3][1]
@@ -537,7 +534,7 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
                 curr_opening = abs(curr_bottom - curr_top)
                 opening_change = abs(curr_opening - prev_opening)
                 
-                # Weight movement by opening change (more mouth opening = more likely speaking)
+                # Weight movement by opening change
                 weighted_movement = movement * (1 + opening_change / 10.0)
             else:
                 weighted_movement = movement
@@ -548,7 +545,6 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
                 speaking_idx = curr_idx
     
     # Return speaking face index if movement exceeds threshold
-    # Increased threshold for stricter detection
     if max_movement > threshold:
         return speaking_idx
     else:
@@ -648,10 +644,9 @@ def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
     padding = 10
     
     # Position subtitle to the RIGHT of the character label
-    # Add spacing (20px) between label and subtitle for better readability
     spacing = 20
     subtitle_x = x1 + label_width + spacing
-    subtitle_y = y1 - line_height  # Align with top of face bbox
+    subtitle_y = y1 - line_height
     
     # Ensure subtitle stays within frame bounds
     if subtitle_x + max_text_width + padding * 2 > frame_width:
@@ -678,7 +673,7 @@ def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
     cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
     
-    # Draw colored border (thinner than bounding box)
+    # Draw colored border
     cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
     
     # Draw text lines
@@ -947,7 +942,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                                          subtitle_path, model_dir, detection_interval=2,
                                          similarity_threshold=0.65, speaking_threshold=0.8,
                                          preserve_audio=True, smoothing_alpha=0.3,
-                                         generate_json=True):
+                                         generate_json=True, subtitle_offset=0.0):
     """
     Annotate video with color-coded speaker subtitles with continuous display
     
@@ -964,6 +959,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         smoothing_alpha: Smoothing factor for bbox positions (0-1, default: 0.3)
                          Lower = more smoothing, higher = faster adaptation
         generate_json: Whether to generate JSON annotation file (default: True)
+        subtitle_offset: Time offset in seconds to apply to all subtitles
+                        Positive = delay subtitles, Negative = advance subtitles
     """
     # Load centers data
     centers, center_paths, centers_data = load_centers_data(centers_data_path)
@@ -974,6 +971,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     print(f"Face matching threshold: {similarity_threshold}")
     print(f"Speaking detection threshold: {speaking_threshold}")
     print(f"BBox smoothing alpha: {smoothing_alpha}")
+    print(f"Subtitle offset: {subtitle_offset:.3f}s")
     print(f"Generate JSON annotation: {generate_json}")
     
     # Parse subtitle file
@@ -1076,7 +1074,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                             face['match_idx'] = -1
                             face['similarity'] = 0
                     
-                    # Detect speaking face with configurable threshold
+                    # Detect speaking face
                     speaking_idx = -1
                     if prev_faces:
                         speaking_idx = detect_speaking_face(prev_faces, faces, threshold=speaking_threshold)
@@ -1118,14 +1116,14 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     subtitle, detection_results, fps
                 )
                 
-                # Don't initialize BBoxSmoother yet - wait for first face detection in PHASE 3
-                # This prevents bbox from appearing before the face is actually detected
+                # Calculate timestamps WITH OFFSET APPLIED
+                start_timestamp = subtitle.start.ordinal / 1000.0 + subtitle_offset
+                end_timestamp = subtitle.end.ordinal / 1000.0 + subtitle_offset
+                
+                # Initialize bbox_smoother as None (will be created in PHASE 3)
                 bbox_smoother = None
                 
-                # Calculate timestamps
-                start_timestamp = subtitle.start.ordinal / 1000.0
-                end_timestamp = subtitle.end.ordinal / 1000.0
-                
+                # Store with offset applied
                 subtitle_speakers[subtitle.index] = {
                     'speaker_id': speaker_id,
                     'speaker_bbox': speaker_bbox,
@@ -1134,8 +1132,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     'bbox_smoother': bbox_smoother,
                     'smoothing_alpha': smoothing_alpha,
                     'text': subtitle.text_without_tags,
-                    'start_ms': subtitle.start.ordinal,
-                    'end_ms': subtitle.end.ordinal,
+                    'start_ms': subtitle.start.ordinal + int(subtitle_offset * 1000),
+                    'end_ms': subtitle.end.ordinal + int(subtitle_offset * 1000),
                     'start_timestamp': start_timestamp,
                     'end_timestamp': end_timestamp
                 }
@@ -1160,8 +1158,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                         'text': subtitle.text_without_tags,
                         'speaker_id': json_speaker_id,
                         'speaker_ids': json_speaker_ids,
-                        'all_faces': [],  # Will be populated with simplified face data
-                        'status': 'unknown',  # Will be determined below
+                        'all_faces': [],
+                        'status': 'unknown',
                         'note': ''
                     }
                     
@@ -1173,9 +1171,8 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     else:
                         json_annotations[start_key]['status'] = 'speaker_not_visible'
                     
-                    # Populate all_faces with simplified data (sample from frames)
+                    # Populate all_faces with simplified data
                     if all_faces:
-                        # Take first frame with faces as representative
                         first_frame_faces = all_faces[0]['faces']
                         json_annotations[start_key]['all_faces'] = [
                             {
@@ -1230,91 +1227,96 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 
                 # Annotate frame
                 if current_subtitle and current_subtitle_info:
+                    # Get the speaker ID determined in PHASE 2 (from voting across subtitle time range)
                     speaker_id = current_subtitle_info['speaker_id']
-                    speaker_bbox = current_subtitle_info['speaker_bbox']
                     
-                    # If speaker is identified
+                    # Determine color based on speaker assignment
                     if speaker_id is not None and speaker_id >= 0:
+                        # Subtitle has an assigned speaker - use speaker's color
                         color = color_manager.get_color(speaker_id)
-                        
-                        # Find speaker's current bbox in frame (if detected)
-                        current_speaker_bbox = None
+                    else:
+                        # Subtitle has no assigned speaker (narration, unknown, etc.) - use white
+                        color = color_manager.default_color
+                    
+                    # Check if the assigned speaker is visible in current frame
+                    speaker_visible = False
+                    speaker_bbox = None
+                    
+                    if speaker_id is not None and speaker_id >= 0:
                         for face in faces_in_frame:
                             if face.get('match_idx') == speaker_id:
-                                current_speaker_bbox = face['bbox']
+                                speaker_visible = True
+                                speaker_bbox = face['bbox']
                                 break
-                        
-                        # Initialize or update BBoxSmoother
-                        bbox_smoother = current_subtitle_info.get('bbox_smoother')
-                        
-                        # Only initialize smoother when we first detect the speaker's face
-                        if bbox_smoother is None and current_speaker_bbox is not None:
-                            # First detection - initialize smoother with current bbox
+                    
+                    # Initialize or update BBoxSmoother
+                    bbox_smoother = current_subtitle_info.get('bbox_smoother')
+                    display_bbox = None
+                    
+                    if speaker_visible and speaker_bbox is not None:
+                        # Speaker is visible in current frame
+                        if bbox_smoother is None:
+                            # First time detecting this speaker in this subtitle segment
                             smoothing_alpha = current_subtitle_info.get('smoothing_alpha', 0.3)
-                            bbox_smoother = BBoxSmoother(current_speaker_bbox, alpha=smoothing_alpha)
+                            bbox_smoother = BBoxSmoother(speaker_bbox, alpha=smoothing_alpha)
                             current_subtitle_info['bbox_smoother'] = bbox_smoother
-                            display_bbox = current_speaker_bbox
-                        elif bbox_smoother is not None:
-                            # Smoother already initialized - update with current detection
-                            display_bbox = bbox_smoother.update(current_speaker_bbox)
+                            display_bbox = speaker_bbox
                         else:
-                            # No smoother and no detection - don't show bbox
-                            display_bbox = None
-                        
-                        if display_bbox:
-                            # Draw speaker's bounding box with thicker line
-                            x1, y1, x2, y2 = display_bbox
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 4)
-                            
-                            # Draw ID label with larger, more visible text
-                            id_label = f"Character {speaker_id}"
-                            label_font = cv2.FONT_HERSHEY_DUPLEX
-                            label_scale = 0.7
-                            label_thickness = 2
-                            label_size = cv2.getTextSize(id_label, label_font, 
-                                                        label_scale, label_thickness)[0]
-                            
-                            # Draw label background (solid colored box)
-                            label_padding = 8
-                            label_width = label_size[0] + label_padding * 2
-                            cv2.rectangle(frame, 
-                                        (x1, y1 - label_size[1] - label_padding * 2), 
-                                        (x1 + label_width, y1), 
-                                        color, -1)
-                            
-                            # Draw white text on colored background
-                            cv2.putText(frame, id_label, 
-                                      (x1 + label_padding, y1 - label_padding),
-                                      label_font, label_scale, (255, 255, 255), 
-                                      label_thickness, cv2.LINE_AA)
-                            
-                            # Draw subtitle BESIDE the label (not overlapping)
-                            # Pass label_width so subtitle can be positioned correctly
-                            frame = draw_subtitle_beside_label(frame, current_subtitle, 
-                                                             display_bbox, color, label_width)
-                        else:
-                            # Speaker bbox not available, show at bottom
-                            frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
-                        
-                        # Draw other faces with their colors
-                        for face in faces_in_frame:
-                            face_id = face.get('match_idx', -1)
-                            if face_id >= 0 and face_id != speaker_id:
-                                face_color = color_manager.get_color(face_id)
-                                fx1, fy1, fx2, fy2 = face['bbox']
-                                cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), face_color, 1)
+                            # Update smoother with new detection
+                            display_bbox = bbox_smoother.update(speaker_bbox)
                     else:
-                        # No identified speaker - show subtitle at bottom
-                        frame = draw_subtitle_at_bottom(frame, current_subtitle, 
-                                                       color=(255, 255, 255))
+                        # Speaker is NOT visible in current frame
+                        # Do NOT update smoother, do NOT display bbox
+                        display_bbox = None
+                    
+                    # Render subtitle and bounding boxes
+                    if display_bbox and speaker_id >= 0:
+                        # Case 1: Speaker is visible - display subtitle beside face
+                        x1, y1, x2, y2 = display_bbox
                         
-                        # Still draw detected faces
-                        for face in faces_in_frame:
-                            face_id = face.get('match_idx', -1)
-                            if face_id >= 0:
-                                face_color = color_manager.get_color(face_id)
-                                fx1, fy1, fx2, fy2 = face['bbox']
-                                cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), face_color, 1)
+                        # Draw thick bounding box around speaker's face
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 4)
+                        
+                        # Draw character ID label
+                        id_label = f"Character {speaker_id}"
+                        label_font = cv2.FONT_HERSHEY_DUPLEX
+                        label_scale = 0.7
+                        label_thickness = 2
+                        label_size = cv2.getTextSize(id_label, label_font, 
+                                                    label_scale, label_thickness)[0]
+                        
+                        # Draw label background
+                        label_padding = 8
+                        label_width = label_size[0] + label_padding * 2
+                        cv2.rectangle(frame, 
+                                    (x1, y1 - label_size[1] - label_padding * 2), 
+                                    (x1 + label_width, y1), 
+                                    color, -1)
+                        
+                        # Draw label text
+                        cv2.putText(frame, id_label, 
+                                  (x1 + label_padding, y1 - label_padding),
+                                  label_font, label_scale, (255, 255, 255), 
+                                  label_thickness, cv2.LINE_AA)
+                        
+                        # Draw subtitle beside the face
+                        frame = draw_subtitle_beside_label(frame, current_subtitle, 
+                                                         display_bbox, color, label_width)
+                    else:
+                        # Case 2: Speaker is NOT visible (or no speaker assigned)
+                        # Display subtitle at bottom with appropriate color
+                        # - If speaker assigned: use speaker's color
+                        # - If no speaker: use white
+                        frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
+                    
+                    # Draw bounding boxes for all other detected faces (non-speakers)
+                    for face in faces_in_frame:
+                        face_id = face.get('match_idx', -1)
+                        if face_id >= 0 and face_id != speaker_id:
+                            # Draw thin bounding box for non-speaking characters
+                            face_color = color_manager.get_color(face_id)
+                            fx1, fy1, fx2, fy2 = face['bbox']
+                            cv2.rectangle(frame, (fx1, fy1), (fx2, fy2), face_color, 1)
                 
                 # Add frame counter
                 cv2.putText(frame, f"Frame: {frame_count}", (10, 30),
@@ -1389,9 +1391,10 @@ if __name__ == "__main__":
         centers_data_path=centers_data_path,
         subtitle_path=subtitle_path,
         model_dir=model_dir,
-        detection_interval=2,           # Process every 2 frames
-        similarity_threshold=0.65,      # Face matching threshold
-        speaking_threshold=0.7,         # Speaking detection threshold (0.5-1.5, higher = stricter)
-        preserve_audio=True,            # Set to False if you don't have FFmpeg or don't need audio
-        generate_json=True              # Generate JSON annotation file
+        detection_interval=2,
+        similarity_threshold=0.65,
+        speaking_threshold=0.7,
+        preserve_audio=True,
+        subtitle_offset=0.0,
+        generate_json=True
     )

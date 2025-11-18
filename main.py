@@ -99,7 +99,7 @@ def parse_arguments():
                         help='FaceNet model directory')
     
     # Subtitle annotation arguments
-    parser.add_argument('--subtitle_file', type=str, default=None,
+    parser.add_argument('--srt', type=str, default=None,
                         help='Path to subtitle file (SRT format). If provided, will create speaker-aware subtitle annotation')
     
     # Processing parameters
@@ -130,6 +130,18 @@ def parse_arguments():
     parser.add_argument('--generate_json', action='store_true', default=True,
                         help='Generate JSON annotation file alongside video (default: True)')
     
+    # Subtitle synchronization arguments (NEW)
+    parser.add_argument('--subtitle_offset', type=float, default=0.0,
+                        help='Manual subtitle time offset in seconds (positive = delay subtitles, negative = advance subtitles)')
+    parser.add_argument('--auto_align', action='store_true', default=False,
+                        help='Automatically calculate optimal subtitle-audio alignment offset before annotation')
+    parser.add_argument('--vad_mode', type=str, default='webrtc',
+                        choices=['energy', 'webrtc', 'silero'],
+                        help='Voice Activity Detection method for auto-alignment (energy=simple, webrtc=balanced, silero=advanced)')
+    parser.add_argument('--vad_aggressiveness', type=int, default=2,
+                        choices=[0, 1, 2, 3],
+                        help='WebRTC VAD aggressiveness level: 0=least aggressive, 3=most aggressive (only used if vad_mode=webrtc)')
+    
     # Legacy annotation option (if no subtitle file provided)
     parser.add_argument('--use_legacy_annotation', action='store_true', default=False,
                         help='Use legacy annotation style without subtitles (only if subtitle_file not provided)')
@@ -153,10 +165,10 @@ def main():
         return
     
     # Check subtitle file if provided
-    if args.subtitle_file:
-        if not check_file_exists(args.subtitle_file, "Subtitle file"):
+    if args.srt:
+        if not check_file_exists(args.srt, "Subtitle file"):
             print("Warning: Subtitle file not found. Will proceed without subtitle annotation.")
-            args.subtitle_file = None
+            args.srt = None
     
     # Check FFmpeg if audio preservation is requested
     if args.preserve_audio:
@@ -378,10 +390,72 @@ def main():
     print("PHASE 3: VIDEO ANNOTATION")
     print("="*70)
     
-    if args.subtitle_file:
-        # Use speaker-aware subtitle annotation
-        print("\nCreating video with speaker-aware subtitle annotation...")
-        print(f"Subtitle file: {args.subtitle_file}")
+    if args.srt:
+        # Initialize final subtitle offset
+        final_subtitle_offset = args.subtitle_offset
+        
+        # Perform automatic alignment if requested
+        if args.auto_align:
+            print("\n" + "-"*70)
+            print("AUTOMATIC SUBTITLE-AUDIO ALIGNMENT")
+            print("-"*70)
+            print(f"VAD Mode: {args.vad_mode}")
+            if args.vad_mode == 'webrtc':
+                print(f"VAD Aggressiveness: {args.vad_aggressiveness}")
+            
+            try:
+                # Import alignment class
+                from speaking_ground_truth_tool import AudioSubtitleAligner
+                
+                # Create aligner instance
+                aligner = AudioSubtitleAligner(
+                    video_path=args.input_video,
+                    srt_path=args.srt,
+                    vad_mode=args.vad_mode,
+                    aggressiveness=args.vad_aggressiveness
+                )
+                
+                # Run alignment process
+                calculated_offset = aligner.run_alignment()
+                
+                # Handle alignment result
+                if calculated_offset != 0.0:
+                    print(f"\n" + "="*70)
+                    print(f"CALCULATED OFFSET: {calculated_offset:.3f} seconds")
+                    print("="*70)
+                    
+                    # In automated pipeline, use calculated offset if quality is good
+                    final_subtitle_offset = calculated_offset
+                    print(f"Applying calculated offset: {final_subtitle_offset:.3f}s")
+                    
+                else:
+                    print("\nAuto-alignment could not determine a reliable offset.")
+                    print(f"Using manual offset: {final_subtitle_offset:.3f}s")
+                
+            except ImportError as e:
+                print(f"\nWarning: Could not import AudioSubtitleAligner")
+                print(f"Error: {e}")
+                print(f"Continuing with manual offset: {final_subtitle_offset:.3f}s")
+                
+            except Exception as e:
+                print(f"\nWarning: Auto-alignment failed with error:")
+                print(f"Error: {e}")
+                print(f"Continuing with manual offset: {final_subtitle_offset:.3f}s")
+        
+        else:
+            # Auto-align not requested
+            if final_subtitle_offset != 0.0:
+                print(f"\nUsing manual subtitle offset: {final_subtitle_offset:.3f}s")
+            else:
+                print(f"\nNo subtitle offset applied (using original SRT timestamps)")
+        
+        # Create annotated video with speaker-aware subtitles
+        print("\n" + "-"*70)
+        print("CREATING SPEAKER-AWARE SUBTITLE ANNOTATION")
+        print("-"*70)
+        print(f"Input video: {args.input_video}")
+        print(f"Subtitle file: {args.srt}")
+        print(f"Final subtitle offset: {final_subtitle_offset:.3f}s")
         print(f"Face matching threshold: {args.similarity_threshold}")
         print(f"Speaking detection threshold: {args.speaking_threshold}")
         print(f"BBox smoothing alpha: {args.smoothing_alpha}")
@@ -394,14 +468,15 @@ def main():
                 input_video=args.input_video,
                 output_video=output_video,
                 centers_data_path=centers_data_path,
-                subtitle_path=args.subtitle_file,
+                subtitle_path=args.srt,
                 model_dir=args.model_dir,
                 detection_interval=args.detection_interval,
                 similarity_threshold=args.similarity_threshold,
                 speaking_threshold=args.speaking_threshold,
                 preserve_audio=args.preserve_audio,
                 smoothing_alpha=args.smoothing_alpha,
-                generate_json=args.generate_json
+                generate_json=args.generate_json,
+                subtitle_offset=final_subtitle_offset
             )
             
             print(f"\n[SUCCESS] Speaker-aware subtitle annotation completed!")
@@ -461,7 +536,7 @@ def main():
     if args.do_retrieval:
         print(f"- Face retrieval: {dirs['retrieval']}")
     
-    if args.subtitle_file:
+    if args.srt:
         output_video = os.path.join(args.output_dir, 'speaker_subtitle_annotated_video.mp4')
         if os.path.exists(output_video):
             size = os.path.getsize(output_video) / (1024*1024)
