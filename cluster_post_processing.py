@@ -235,10 +235,17 @@ def calculate_inter_cluster_similarity(cluster1, cluster2, facial_encodings):
     total_sim = 0
     count = 0
     
-    sample_size = min(10, len(cluster1), len(cluster2))  # Sample to avoid too much computation
+    #sample_size = min(10, len(cluster1), len(cluster2))  # Sample to avoid too much computation
     
-    for i, path1 in enumerate(cluster1[:sample_size]):
+    """for i, path1 in enumerate(cluster1[:sample_size]):
         for j, path2 in enumerate(cluster2[:sample_size]):
+            sim = np.dot(facial_encodings[path1], facial_encodings[path2])
+            max_sim = max(max_sim, sim)
+            total_sim += sim
+            count += 1"""
+    
+    for i, path1 in cluster1:
+        for j, path2 in cluster2:
             sim = np.dot(facial_encodings[path1], facial_encodings[path2])
             max_sim = max(max_sim, sim)
             total_sim += sim
@@ -261,7 +268,7 @@ def post_process_clusters(clusters, facial_encodings, strategy='small_to_large_o
         final_clusters, merge_actions = merge_small_clusters_to_large_only(
             clusters, facial_encodings,
             min_large_cluster_size=kwargs.get('min_large_cluster_size', 50),  # Stricter threshold
-            small_cluster_percentage=kwargs.get('small_cluster_percentage', 0.05),  # 5% of total faces
+            small_cluster_size=kwargs.get('small_cluster_size', 15),  # 5% of total faces
             merge_threshold=kwargs.get('merge_threshold', 0.4),  # Much stricter threshold
             max_merges_per_cluster=kwargs.get('max_merges_per_cluster', 10),  # Fewer merges allowed
             safety_checks=kwargs.get('safety_checks', True)
@@ -273,7 +280,7 @@ def post_process_clusters(clusters, facial_encodings, strategy='small_to_large_o
 
 
 def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_cluster_size=50,
-                                      small_cluster_percentage=0.08, merge_threshold=0.4, 
+                                      small_cluster_size=15, merge_threshold=0.4, 
                                       max_merges_per_cluster=10, safety_checks=True):
     """
     Only merge small clusters to large clusters with strict conditions
@@ -282,7 +289,7 @@ def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_clu
         clusters: Original clusters
         facial_encodings: Facial encoding dictionary
         min_large_cluster_size: Minimum size to be considered as large cluster
-        small_cluster_percentage: Small clusters defined as < this percentage of total faces
+        small_cluster_size: Small clusters defined as < this percentage of total faces
         merge_threshold: Minimum similarity for merging (much stricter)
         max_merges_per_cluster: Maximum merges per large cluster (reduced)
         safety_checks: Whether to enable safety checks
@@ -291,12 +298,12 @@ def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_clu
         Final clusters and merge actions
     """
     total_faces = sum(len(cluster) for cluster in clusters)
-    small_cluster_threshold = max(5, int(total_faces * small_cluster_percentage))  # At least 5 faces
+    #small_cluster_threshold = max(5, int(total_faces * small_cluster_percentage))  # At least 5 faces
     
     print(f"Processing small-to-large cluster merging only...")
     print(f"   Total faces: {total_faces}")
     print(f"   Large cluster threshold: >= {min_large_cluster_size} faces")
-    print(f"   Small cluster threshold: <= {small_cluster_threshold} faces ({small_cluster_percentage*100}% of total)")
+    print(f"   Small cluster threshold: <= {small_cluster_size} faces")
     print(f"   Merge threshold: {merge_threshold}")
     
     # Identify large and small clusters with adaptive criteria
@@ -307,7 +314,7 @@ def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_clu
     for i, cluster in enumerate(clusters):
         if len(cluster) >= min_large_cluster_size:
             large_clusters.append((i, cluster))
-        elif len(cluster) <= small_cluster_threshold:
+        elif len(cluster) <= small_cluster_size:
             small_clusters.append((i, cluster))
         else:
             medium_clusters.append((i, cluster))
@@ -425,7 +432,7 @@ def merge_small_clusters_to_large_only(clusters, facial_encodings, min_large_clu
 
 def enhanced_safety_checks(small_cluster, target_cluster, facial_encodings, base_threshold):
     """
-    Enhanced safety checks with stricter criteria
+    Enhanced safety checks with stricter criteria 
     """
     # Check 1: Minimum cluster size ratio (stricter)
     size_ratio = len(small_cluster) / len(target_cluster)
