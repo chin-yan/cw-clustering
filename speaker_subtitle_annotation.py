@@ -769,8 +769,8 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
     start_ms = subtitle.start.ordinal
     end_ms = subtitle.end.ordinal
     
-    start_frame = int((start_ms / 1000.0) * fps)
-    end_frame = int((end_ms / 1000.0) * fps)
+    start_frame = round((start_ms / 1000.0) * fps)
+    end_frame = round((end_ms / 1000.0) * fps)
     
     # Collect all speaking face detections in this time range
     speaker_votes = Counter()
@@ -1196,13 +1196,13 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             print("\n" + "="*70)
             print("PHASE 3: Rendering final video with subtitles")
             print("="*70)
-            
+
             # Reopen video for rendering
             cap = cv2.VideoCapture(input_video)
             frame_count = 0
-            
+
             pbar = tqdm(total=total_frames, desc="Rendering")
-            
+
             while True:
                 ret, frame = cap.read()
                 if not ret:
@@ -1227,51 +1227,51 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 
                 # Annotate frame
                 if current_subtitle and current_subtitle_info:
-                    # Get the speaker ID determined in PHASE 2 (from voting across subtitle time range)
+                    # ============================================================
+                    # FIXED: Get speaker ID from PHASE 2 voting
+                    # ============================================================
                     speaker_id = current_subtitle_info['speaker_id']
                     
-                    # Determine color based on speaker assignment
+                    # FIXED: Determine color based on speaker assignment
+                    # This color stays consistent even when speaker is not visible
                     if speaker_id is not None and speaker_id >= 0:
-                        # Subtitle has an assigned speaker - use speaker's color
                         color = color_manager.get_color(speaker_id)
                     else:
-                        # Subtitle has no assigned speaker (narration, unknown, etc.) - use white
                         color = color_manager.default_color
                     
-                    # Check if the assigned speaker is visible in current frame
-                    speaker_visible = False
-                    speaker_bbox = None
-                    
+                    # ============================================================
+                    # ORIGINAL LOGIC: Find speaker bbox in current frame
+                    # ============================================================
+                    current_speaker_bbox = None
                     if speaker_id is not None and speaker_id >= 0:
                         for face in faces_in_frame:
                             if face.get('match_idx') == speaker_id:
-                                speaker_visible = True
-                                speaker_bbox = face['bbox']
+                                current_speaker_bbox = face['bbox']
                                 break
                     
-                    # Initialize or update BBoxSmoother
+                    # ============================================================
+                    # ORIGINAL LOGIC: BBoxSmoother (prevents flickering)
+                    # ============================================================
                     bbox_smoother = current_subtitle_info.get('bbox_smoother')
                     display_bbox = None
                     
-                    if speaker_visible and speaker_bbox is not None:
-                        # Speaker is visible in current frame
-                        if bbox_smoother is None:
-                            # First time detecting this speaker in this subtitle segment
-                            smoothing_alpha = current_subtitle_info.get('smoothing_alpha', 0.3)
-                            bbox_smoother = BBoxSmoother(speaker_bbox, alpha=smoothing_alpha)
-                            current_subtitle_info['bbox_smoother'] = bbox_smoother
-                            display_bbox = speaker_bbox
-                        else:
-                            # Update smoother with new detection
-                            display_bbox = bbox_smoother.update(speaker_bbox)
+                    if bbox_smoother is None and current_speaker_bbox is not None:
+                        # First time detecting speaker - initialize smoother
+                        smoothing_alpha = current_subtitle_info.get('smoothing_alpha', 0.3)
+                        bbox_smoother = BBoxSmoother(current_speaker_bbox, alpha=smoothing_alpha)
+                        current_subtitle_info['bbox_smoother'] = bbox_smoother
+                        display_bbox = current_speaker_bbox
+                    elif bbox_smoother is not None:
+                        # Update smoother with current detection (or None)
+                        display_bbox = bbox_smoother.update(current_speaker_bbox)
                     else:
-                        # Speaker is NOT visible in current frame
-                        # Do NOT update smoother, do NOT display bbox
                         display_bbox = None
                     
+                    # ============================================================
                     # Render subtitle and bounding boxes
+                    # ============================================================
                     if display_bbox and speaker_id >= 0:
-                        # Case 1: Speaker is visible - display subtitle beside face
+                        # Case 1: Speaker bbox is available - display subtitle beside face
                         x1, y1, x2, y2 = display_bbox
                         
                         # Draw thick bounding box around speaker's face
@@ -1295,18 +1295,16 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                         
                         # Draw label text
                         cv2.putText(frame, id_label, 
-                                  (x1 + label_padding, y1 - label_padding),
-                                  label_font, label_scale, (255, 255, 255), 
-                                  label_thickness, cv2.LINE_AA)
+                                (x1 + label_padding, y1 - label_padding),
+                                label_font, label_scale, (255, 255, 255), 
+                                label_thickness, cv2.LINE_AA)
                         
                         # Draw subtitle beside the face
                         frame = draw_subtitle_beside_label(frame, current_subtitle, 
-                                                         display_bbox, color, label_width)
+                                                        display_bbox, color, label_width)
                     else:
-                        # Case 2: Speaker is NOT visible (or no speaker assigned)
-                        # Display subtitle at bottom with appropriate color
-                        # - If speaker assigned: use speaker's color
-                        # - If no speaker: use white
+                        # Case 2: Speaker bbox not available - display subtitle at bottom
+                        # FIXED: Use speaker's color (not white, unless no speaker assigned)
                         frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
                     
                     # Draw bounding boxes for all other detected faces (non-speakers)
@@ -1320,14 +1318,14 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 
                 # Add frame counter
                 cv2.putText(frame, f"Frame: {frame_count}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
                 # Write frame
                 out.write(frame)
                 
                 frame_count += 1
                 pbar.update(1)
-            
+
             pbar.close()
     
     # Release resources
@@ -1378,10 +1376,10 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep10.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep10\color_coded_subtitles.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep10\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep10.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep1.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_anntation_v2\s2ep1\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep1.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run video annotation with color-coded speaker subtitles
