@@ -939,8 +939,8 @@ def save_annotation_json(json_data, output_path):
 
 
 def annotate_video_with_speaker_subtitles(input_video, output_video, centers_data_path, 
-                                         subtitle_path, model_dir, detection_interval=2,
-                                         similarity_threshold=0.65, speaking_threshold=0.8,
+                                         subtitle_path, model_dir, detection_interval=1,
+                                         similarity_threshold=0.65, speaking_threshold=1,
                                          preserve_audio=True, smoothing_alpha=0.3,
                                          generate_json=True, subtitle_offset=0.0):
     """
@@ -1376,10 +1376,10 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
 
 if __name__ == "__main__":
     # Configuration
-    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep1.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_anntation_v2\s2ep1\color_coded_subtitles.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep1\centers\centers_data.pkl"
-    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep1.srt"
+    input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep4.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_anntation_v2\s2ep4-2\color_coded_subtitles.mp4"
+    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep4\centers\centers_data.pkl"
+    subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep4.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
     
     # Run video annotation with color-coded speaker subtitles
@@ -1389,9 +1389,9 @@ if __name__ == "__main__":
         centers_data_path=centers_data_path,
         subtitle_path=subtitle_path,
         model_dir=model_dir,
-        detection_interval=2,
+        detection_interval=1,
         similarity_threshold=0.65,
-        speaking_threshold=0.7,
+        speaking_threshold=1,
         preserve_audio=True,
         subtitle_offset=0.0,
         generate_json=True
