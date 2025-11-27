@@ -469,25 +469,84 @@ def compute_face_encodings_for_frame(frame, faces, sess, images_placeholder,
     return faces
 
 
-def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
+def calculate_mouth_aspect_ratio(mouth_landmarks):
     """
-    Detect which face is currently speaking by analyzing mouth movement
+    Calculate Mouth Aspect Ratio (MAR) from mouth landmarks
+    
+    MAR is a normalized metric that measures mouth opening relative to mouth width.
+    It is invariant to face position and scale in the frame, making it robust to
+    camera movement and zoom operations.
+    
+    Args:
+        mouth_landmarks: List of 20 mouth landmark points (indices 48-67 from dlib 68-point model)
+                        Outer lip points: 48-59 (outer lip contour)
+                        Inner lip points: 60-67 (inner lip contour)
+    
+    Returns:
+        float: Mouth Aspect Ratio value (typically 0.1-0.7 for normal speaking)
+    """
+    if not mouth_landmarks or len(mouth_landmarks) < 20:
+        return 0.0
+    
+    mouth_landmarks = np.array(mouth_landmarks)
+    
+    # Mouth landmarks structure (dlib 68-point model):
+    # For MAR calculation, we use:
+    # - Vertical distance: top to bottom (mouth opening)
+    # - Horizontal distance: left to right (mouth width)
+    
+    # A. Calculate Vertical Distance (Height)
+    # Using the average distance of three corresponding vertical points provides a more stable capture of opening and closing points.
+    # 1. Center: 51(idx 3) - 57(idx 9)
+    # 2. Left: 50(idx 2) - 58(idx 10)
+    # 3. Right: 52(idx 4) - 56(idx 8)
+
+    dist_center = abs(mouth_landmarks[9][1] - mouth_landmarks[3][1])
+    dist_left = abs(mouth_landmarks[10][1] - mouth_landmarks[2][1])
+    dist_right = abs(mouth_landmarks[8][1] - mouth_landmarks[4][1])
+    mouth_height = (dist_center + dist_left + dist_right) / 3.0
+
+    # B. Calculate Horizontal Distance (Width)
+    # Left corner of mouth 48(idx 0) - Right corner of mouth 54(idx 6)
+    mouth_width = abs(mouth_landmarks[6][0] - mouth_landmarks[0][0])
+    
+    # Avoid division by zero
+    if mouth_width < 1:
+        return 0.0
+    
+    # MAR = mouth height / mouth width (normalized ratio, scale-invariant)
+    mar = mouth_height / mouth_width
+    
+    return mar
+
+
+def detect_speaking_face(prev_faces, curr_faces, threshold=0.15):
+    """
+    Detect which face is currently speaking by analyzing Mouth Aspect Ratio (MAR) change
+    
+    This method uses MAR change instead of pixel-level displacement, making it
+    invariant to face position and scale changes in the frame. This solves the problem
+    where faces moving or zooming in/out would be incorrectly marked as speaking.
     
     Args:
         prev_faces: Faces detected in previous frame
         curr_faces: Faces detected in current frame
-        threshold: Mouth movement threshold (increased for stricter detection)
+        threshold: MAR change threshold for speaking detection
+                   Recommended values: 0.10-0.25
+                   0.10 = very sensitive (may have false positives)
+                   0.15 = recommended (balanced)
+                   0.25 = more conservative (may miss subtle speaking)
         
     Returns:
-        Index of speaking face, or -1 if none
+        Index of speaking face, or -1 if none detected
     """
     if not prev_faces or not curr_faces:
         return -1
     
-    max_movement = 0
+    max_mar_change = 0
     speaking_idx = -1
     
-    # Match faces between frames
+    # Match faces between frames based on facial encodings
     for curr_idx, curr_face in enumerate(curr_faces):
         curr_encoding = curr_face.get('encoding')
         if curr_encoding is None:
@@ -502,50 +561,38 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.8):
             if prev_encoding is None:
                 continue
             
-            # Calculate similarity
+            # Calculate face encoding similarity
             similarity = np.dot(curr_encoding, prev_encoding)
             
             if similarity > best_match_sim:
                 best_match_sim = similarity
                 best_match_idx = prev_idx
         
-        # If we found a match, calculate mouth movement
+        # If we found a matching face with high confidence
         if best_match_idx >= 0 and best_match_sim > 0.8:
-            prev_mouth = prev_faces[best_match_idx]['mouth_landmarks']
-            curr_mouth = curr_face['mouth_landmarks']
+            prev_mouth = prev_faces[best_match_idx].get('mouth_landmarks')
+            curr_mouth = curr_face.get('mouth_landmarks')
             
-            # Calculate mouth movement as average landmark displacement
-            movement = 0
-            for i in range(len(prev_mouth)):
-                movement += distance.euclidean(prev_mouth[i], curr_mouth[i])
-            movement /= len(prev_mouth)
+            if not prev_mouth or not curr_mouth:
+                continue
             
-            # Additional check: Calculate mouth opening (vertical movement)
-            if len(prev_mouth) >= 12 and len(curr_mouth) >= 12:
-                # Top lip center (index 3 in outer lip landmarks)
-                prev_top = prev_mouth[3][1]
-                curr_top = curr_mouth[3][1]
-                # Bottom lip center (index 9 in outer lip landmarks)
-                prev_bottom = prev_mouth[9][1]
-                curr_bottom = curr_mouth[9][1]
-                
-                # Calculate mouth opening change
-                prev_opening = abs(prev_bottom - prev_top)
-                curr_opening = abs(curr_bottom - curr_top)
-                opening_change = abs(curr_opening - prev_opening)
-                
-                # Weight movement by opening change
-                weighted_movement = movement * (1 + opening_change / 10.0)
-            else:
-                weighted_movement = movement
+            # Calculate MAR (Mouth Aspect Ratio) for both frames
+            # MAR is invariant to face position and scale
+            prev_mar = calculate_mouth_aspect_ratio(prev_mouth)
+            curr_mar = calculate_mouth_aspect_ratio(curr_mouth)
             
-            # Update max movement
-            if weighted_movement > max_movement:
-                max_movement = weighted_movement
+            # Calculate MAR change
+            # Large change indicates mouth opening/closing (speaking)
+            # Small change indicates mouth position staying static (not speaking)
+            mar_change = abs(curr_mar - prev_mar)
+            
+            # Track the face with maximum MAR change
+            if mar_change > max_mar_change:
+                max_mar_change = mar_change
                 speaking_idx = curr_idx
     
-    # Return speaking face index if movement exceeds threshold
-    if max_movement > threshold:
+    # Return speaking face index if MAR change exceeds threshold
+    if max_mar_change > threshold:
         return speaking_idx
     else:
         return -1
@@ -1377,7 +1424,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
 if __name__ == "__main__":
     # Configuration
     input_video = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\ep4.mp4"
-    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_anntation_v2\s2ep4-2\color_coded_subtitles.mp4"
+    output_video = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2_anntation_v2\s2ep4 v3\color_coded_subtitles.mp4"
     centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result_s2ep4\centers\centers_data.pkl"
     subtitle_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\S02\subtitles\s2ep4.srt"
     model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
@@ -1391,7 +1438,7 @@ if __name__ == "__main__":
         model_dir=model_dir,
         detection_interval=1,
         similarity_threshold=0.65,
-        speaking_threshold=1,
+        speaking_threshold=0.03,
         preserve_audio=True,
         subtitle_offset=0.0,
         generate_json=True
