@@ -3,74 +3,74 @@
 import os
 import cv2
 import numpy as np
-import tensorflow as tf
 from tqdm import tqdm
-import facenet.src.align.detect_face as detect_face
+from insightface.app import FaceAnalysis
+from insightface.utils import face_align # Import alignment tool
 
-def detect_faces_in_frames(sess, frame_paths, output_dir, min_face_size=20, face_size=160):
+def apply_unsharp_mask(image, kernel_size=(5, 5), sigma=1.0, amount=1.0, threshold=0):
     """
-    Detecting faces from frames using MTCNN
-
-    Args:
-    sess: TensorFlow session
-    frame_paths: frame path list
-    output_dir: The directory where the detected faces are saved
-    min_face_size: minimum face size
-    face_size: The size of the output face image
-
-    Returns:
-    Path list of detected face images
+    Lightweight sharpening: Unsharp Masking
+    More natural than direct kernel sharpening, does not overly destroy image structure.
     """
-    print("Creating MTCNN network...")
-    pnet, rnet, onet = create_mtcnn(sess, None)
+    blurred = cv2.GaussianBlur(image, kernel_size, sigma)
+    sharpened = float(amount + 1) * image - float(amount) * blurred
+    sharpened = np.maximum(sharpened, 0)
+    sharpened = np.minimum(sharpened, 255)
+    return sharpened.astype(np.uint8)
+
+def detect_faces_with_insightface(frame_paths, output_dir, min_face_size=30, face_size=112, margin_ratio=0.0):
+    """
+    Detect AND Align faces using InsightFace (SCRFD).
+    CRITICAL: Uses norm_crop to align face landmarks, which is required for ArcFace accuracy.
+    """
+    print("Initializing InsightFace Detector (SCRFD)...")
     
-    face_paths = []
+    # Load detection model
+    app = FaceAnalysis(name='buffalo_l', allowed_modules=['detection'], providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    app.prepare(ctx_id=0, det_size=(640, 640))
+    
+    face_paths_out = []
     face_count = 0
     
-    print("Detecting faces from frame...")
+    print("Detecting and aligning faces...")
     for frame_path in tqdm(frame_paths):
         frame = cv2.imread(frame_path)
         if frame is None:
             continue
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        bounding_boxes, _ = detect_face.detect_face(
-            frame_rgb, min_face_size, pnet, rnet, onet, [0.6, 0.7, 0.7], 0.7
-        )
-        for i, bbox in enumerate(bounding_boxes):
-            bbox = bbox.astype(np.int)
-            # Increase the bounding box size to include more facial features
-            x1 = max(0, bbox[0] - 10)
-            y1 = max(0, bbox[1] - 10)
-            x2 = min(frame.shape[1], bbox[2] + 10)
-            y2 = min(frame.shape[0], bbox[3] + 10)
+        try:
+            # 1. Detect faces
+            faces = app.get(frame)
+        except Exception:
+            continue
+        
+        for i, face in enumerate(faces):
+            # Check face size (bbox height)
+            bbox = face.bbox
+            if (bbox[3] - bbox[1]) < min_face_size:
+                continue
             
-            # Extracting faces
-            face = frame[y1:y2, x1:x2, :]
-            
-            # Checking the validity of face images
-            if face.size == 0 or face.shape[0] == 0 or face.shape[1] == 0:
+            # 2. Key step: Face Alignment
+            # ArcFace relies heavily on facial feature alignment; simple cropping yields poor results.
+            # norm_crop aligns and crops the face to a standard 112x112 based on 5 key points (kps).
+            try:
+                align_img = face_align.norm_crop(frame, landmark=face.kps, image_size=112)
+            except Exception:
                 continue
                 
-            # Resize
-            face_resized = cv2.resize(face, (face_size, face_size))
+            if align_img is None or align_img.size == 0:
+                continue
             
-            # Generate output path
+            align_img = apply_unsharp_mask(align_img, amount=1.0)
+
+            # 3. Save aligned images
             frame_name = os.path.basename(frame_path)
             face_name = f"{os.path.splitext(frame_name)[0]}_face_{i}.jpg"
-            face_path = os.path.join(output_dir, face_name)
+            save_path = os.path.join(output_dir, face_name)
             
-            # Save face
-            cv2.imwrite(face_path, face_resized)
-            face_paths.append(face_path)
+            cv2.imwrite(save_path, align_img)
+            face_paths_out.append(save_path)
             face_count += 1
-    
-    print(f"A total of {face_count} faces were detected")
-    return face_paths
-
-def create_mtcnn(sess, model_path):
-    if not model_path:
-        model_path = None
-    
-    pnet, rnet, onet = detect_face.create_mtcnn(sess, model_path)
-    return pnet, rnet, onet
+            
+    print(f"A total of {face_count} aligned faces were detected and saved")
+    return face_paths_out

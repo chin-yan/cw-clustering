@@ -237,15 +237,9 @@ def calculate_inter_cluster_similarity(cluster1, cluster2, facial_encodings):
     
     #sample_size = min(10, len(cluster1), len(cluster2))  # Sample to avoid too much computation
     
-    """for i, path1 in enumerate(cluster1[:sample_size]):
-        for j, path2 in enumerate(cluster2[:sample_size]):
-            sim = np.dot(facial_encodings[path1], facial_encodings[path2])
-            max_sim = max(max_sim, sim)
-            total_sim += sim
-            count += 1"""
     
-    for i, path1 in cluster1:
-        for j, path2 in cluster2:
+    for path1 in cluster1:
+        for path2 in cluster2:
             sim = np.dot(facial_encodings[path1], facial_encodings[path2])
             max_sim = max(max_sim, sim)
             total_sim += sim

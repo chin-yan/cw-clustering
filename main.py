@@ -3,7 +3,6 @@
 import os
 import argparse
 import cv2
-import tensorflow as tf
 import numpy as np
 import math
 from tqdm import tqdm
@@ -13,6 +12,9 @@ import shutil
 import subprocess
 import sys
 import time
+
+# Remove tensorflow imports
+# import tensorflow as tf 
 
 import face_detection
 import feature_extraction
@@ -25,7 +27,7 @@ import enhanced_video_annotation
 import cluster_post_processing
 import speaker_subtitle_annotation
 
-tf.disable_v2_behavior()
+# tf.disable_v2_behavior() # Removed
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -95,8 +97,8 @@ def parse_arguments():
                         help='Input video path')
     parser.add_argument('--output_dir', type=str, required=True,
                         help='Output directory')
-    parser.add_argument('--model_dir', type=str, required=True,
-                        help='FaceNet model directory')
+    # Removed model_dir argument as InsightFace manages models automatically
+    # parser.add_argument('--model_dir', type=str, required=True, help='FaceNet model directory')
     
     # Subtitle annotation arguments
     parser.add_argument('--srt', type=str, default=None,
@@ -105,12 +107,12 @@ def parse_arguments():
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=100, help='Batch size for feature extraction')
     parser.add_argument('--face_size', type=int, default=160, help='Face image size')
-    parser.add_argument('--cluster_threshold', type=float, default=0.55, help='Clustering threshold')
+    parser.add_argument('--cluster_threshold', type=float, default=0.52, help='Clustering threshold (Suggested 0.55-0.70 for ArcFace)')
     parser.add_argument('--frames_interval', type=int, default=30, help='Frame extraction interval')
-    parser.add_argument('--similarity_threshold', type=float, default=0.65, help='Face similarity threshold for matching')
-    parser.add_argument('--temporal_weight', type=float, default=0.25, help='Temporal continuity weight')
-    parser.add_argument('--speaking_threshold', type=float, default=0.7, 
-                        help='Speaking detection threshold (0.5-1.5, higher = stricter)')
+    parser.add_argument('--similarity_threshold', type=float, default=0.50, help='Face similarity threshold for matching (Suggested 0.40-0.50 for ArcFace)')
+    parser.add_argument('--temporal_weight', type=float, default=0.1, help='Temporal continuity weight')
+    parser.add_argument('--speaking_threshold', type=float, default=0.05, 
+                        help='Speaking detection threshold')
     
     # Method selection
     parser.add_argument('--method', type=str, default='hybrid', 
@@ -130,7 +132,7 @@ def parse_arguments():
     parser.add_argument('--generate_json', action='store_true', default=True,
                         help='Generate JSON annotation file alongside video (default: True)')
     
-    # Subtitle synchronization arguments (NEW)
+    # Subtitle synchronization arguments
     parser.add_argument('--subtitle_offset', type=float, default=0.0,
                         help='Manual subtitle time offset in seconds (positive = delay subtitles, negative = advance subtitles)')
     parser.add_argument('--auto_align', action='store_true', default=False,
@@ -161,9 +163,6 @@ def main():
     if not check_file_exists(args.input_video, "Input video"):
         return
     
-    if not check_file_exists(args.model_dir, "FaceNet model directory"):
-        return
-    
     # Check subtitle file if provided
     if args.srt:
         if not check_file_exists(args.srt, "Subtitle file"):
@@ -191,174 +190,165 @@ def main():
     # Extract frames
     frames_paths = extract_frames(args.input_video, dirs['faces'], args.frames_interval)
     
-    with tf.Graph().as_default():
-        with tf.Session() as sess:
-            print(f"\nUsing clustering method: {args.method}")
-            
-            # Step 1: Face detection
-            print("\nStep 1: Detecting faces...")
-            if args.method in ['adjusted', 'hybrid']:
-                from speaking_based_filter import detect_faces_with_speaking_filter
-                face_paths = detect_faces_with_speaking_filter(
-                    sess, frames_paths, dirs['faces'], 
-                    video_path=args.input_video,
-                    min_face_size=60, face_size=args.face_size
-                )
+    # Note: Removed TensorFlow Session context manager as InsightFace handles its own session
+    print(f"\nUsing clustering method: {args.method}")
+    
+    # Step 1: Face detection
+    print("\nStep 1: Detecting faces (InsightFace/SCRFD)...")
+    # Updated to use InsightFace detection
+    face_paths = face_detection.detect_faces_with_insightface(
+        frames_paths, 
+        dirs['faces'], 
+        min_face_size=30, 
+        face_size=112  # InsightFace standard input size
+    )
+        
+    # Step 1.5: Quality filtering
+    print("\nStep 1.5: Filtering low-quality faces...")
+    from face_quality_filter import integrate_quality_filter_with_main
+
+    face_paths = integrate_quality_filter_with_main(face_paths, args.output_dir, strict_mode=False)
+
+    if len(face_paths) == 0:
+        print("[ERROR] No faces passed quality check!")
+        return
+
+    print(f"[OK] Quality check completed, {len(face_paths)} high-quality face images retained")
+
+    # Step 2: Feature extraction
+    print("\nStep 2: Extracting facial features (InsightFace)...")
+    
+    # Initialize InsightFace model handler
+    model_handler = feature_extraction.load_model(None, None)
+    
+    embedding_size = 512 # ArcFace default
+    
+    nrof_images = len(face_paths)
+    emb_array = np.zeros((nrof_images, embedding_size))
+    
+    # Using updated feature extraction for InsightFace
+    facial_encodings = feature_extraction.compute_facial_encodings(
+        None, None, None, None,
+        112, embedding_size, nrof_images, 0,
+        emb_array, args.batch_size, face_paths,
+        model_handler=model_handler
+    )
+    
+    # Step 3: Clustering
+    print("\nStep 3: Clustering faces...")
+    # Logic remains same for clustering algorithm
+    if args.method == 'adjusted':
+        clusters = clustering.cluster_facial_encodings(
+            facial_encodings, 
+            threshold=args.cluster_threshold,
+            iterations=100,
+            temporal_weight=args.temporal_weight
+        )
+    elif args.method == 'hybrid':
+        original_clusters = clustering.cluster_facial_encodings(
+            facial_encodings, threshold=args.cluster_threshold
+        )
+        adjusted_clusters = clustering.cluster_facial_encodings(
+            facial_encodings, 
+            threshold=args.cluster_threshold,
+            iterations=100,
+            temporal_weight=args.temporal_weight
+        )
+        
+        # Choose better result
+        original_sizes = [len(c) for c in original_clusters]
+        adjusted_sizes = [len(c) for c in adjusted_clusters]
+        
+        original_std = np.std(original_sizes) / np.mean(original_sizes) if np.mean(original_sizes) > 0 else float('inf')
+        adjusted_std = np.std(adjusted_sizes) / np.mean(adjusted_sizes) if np.mean(adjusted_sizes) > 0 else float('inf')
+        
+        if len(adjusted_clusters) > 0 and len(original_clusters) > 0:
+            if (len(adjusted_clusters) <= len(original_clusters) * 0.7 or 
+                (len(adjusted_clusters) <= len(original_clusters) and 
+                adjusted_std < original_std * 0.8)):
+                print(f"Selected adjusted clustering: {len(adjusted_clusters)} clusters")
+                clusters = adjusted_clusters
             else:
-                face_paths = face_detection.detect_faces_in_frames(
-                    sess, frames_paths, dirs['faces'], 
-                    min_face_size=20, face_size=args.face_size
-                )
-                
-            # Step 1.5: Quality filtering
-            print("\nStep 1.5: Filtering low-quality faces...")
-            from face_quality_filter import integrate_quality_filter_with_main
+                print(f"Selected original clustering: {len(original_clusters)} clusters")
+                clusters = original_clusters
+        elif len(original_clusters) > 0:
+            clusters = original_clusters
+        else:
+            clusters = adjusted_clusters
+    else:
+        clusters = clustering.cluster_facial_encodings(
+            facial_encodings, threshold=args.cluster_threshold
+        )
+    
+    # Step 4: Post-processing
+    print("\nStep 4: Post-processing clusters...")
+    
+    processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
+        clusters, facial_encodings,
+        min_large_cluster_size=50,
+        small_cluster_size=15, # Changed param name to match new function signature
+        merge_threshold=0.4,
+        max_merges_per_cluster=15,
+        safety_checks=True
+    )
+    
+    clusters = processed_clusters
+    
+    print(f"[OK] Post-processing completed:")
+    print(f"   Merge actions: {len(merge_actions)}")
+    for action in merge_actions:
+        source_cluster = action.get('cluster_j', 'unknown')
+        target_cluster = action.get('cluster_i', 'unknown')
+        faces_added = action.get('faces_added', 'unknown')
+        
+        score = action.get('confidence', action.get('similarity', 0))
+        action_type = action.get('type', 'merge')
+        
+        print(f"   {action_type}: Cluster {source_cluster} -> Cluster {target_cluster} "
+              f"(+{faces_added} faces, score: {score:.3f})")
 
-            face_paths = integrate_quality_filter_with_main(face_paths, args.output_dir, strict_mode=False)
+    # Step 5: Save clustering results
+    print(f"\nSaving {len(clusters)} clusters...")
+    for idx, cluster in enumerate(clusters):
+        cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
+        if not os.path.exists(cluster_dir):
+            os.makedirs(cluster_dir)
+        for face_path in cluster:
+            face_name = os.path.basename(face_path)
+            dst_path = os.path.join(cluster_dir, face_name)
+            shutil.copy2(face_path, dst_path)
 
-            if len(face_paths) == 0:
-                print("[ERROR] No faces passed quality check!")
-                return
-
-            print(f"[OK] Quality check completed, {len(face_paths)} high-quality face images retained")
-
-            # Step 2: Feature extraction
-            print("\nStep 2: Extracting facial features...")
-            model_dir = os.path.expanduser(args.model_dir)
-            feature_extraction.load_model(sess, model_dir)
-             
-            images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
-            embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
-            phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
-            embedding_size = embeddings.get_shape()[1]
-            
-            nrof_images = len(face_paths)
-            nrof_batches = int(math.ceil(1.0*nrof_images / args.batch_size))
-            emb_array = np.zeros((nrof_images, embedding_size))
-            
-            facial_encodings = feature_extraction.compute_facial_encodings(
-                sess, images_placeholder, embeddings, phase_train_placeholder,
-                args.face_size, embedding_size, nrof_images, nrof_batches,
-                emb_array, args.batch_size, face_paths
-            )
-            
-            # Step 3: Clustering
-            print("\nStep 3: Clustering faces...")
-            if args.method == 'adjusted':
-                clusters = clustering.cluster_facial_encodings(
-                    facial_encodings, 
-                    threshold=args.cluster_threshold,
-                    iterations=30,
-                    temporal_weight=args.temporal_weight
-                )
-            elif args.method == 'hybrid':
-                original_clusters = clustering.cluster_facial_encodings(
-                    facial_encodings, threshold=args.cluster_threshold
-                )
-                adjusted_clusters = clustering.cluster_facial_encodings(
-                    facial_encodings, 
-                    threshold=args.cluster_threshold,
-                    iterations=30,
-                    temporal_weight=args.temporal_weight
-                )
-                
-                # Choose better result
-                original_sizes = [len(c) for c in original_clusters]
-                adjusted_sizes = [len(c) for c in adjusted_clusters]
-                
-                original_std = np.std(original_sizes) / np.mean(original_sizes) if np.mean(original_sizes) > 0 else float('inf')
-                adjusted_std = np.std(adjusted_sizes) / np.mean(adjusted_sizes) if np.mean(adjusted_sizes) > 0 else float('inf')
-                
-                if len(adjusted_clusters) > 0 and len(original_clusters) > 0:
-                    original_avg_size = np.mean([len(c) for c in original_clusters])
-                    adjusted_avg_size = np.mean([len(c) for c in adjusted_clusters])
-                    
-                    if (len(adjusted_clusters) <= len(original_clusters) * 0.7 or 
-                        (len(adjusted_clusters) <= len(original_clusters) and 
-                        adjusted_std < original_std * 0.8)):
-                        print(f"Selected adjusted clustering: {len(adjusted_clusters)} clusters")
-                        clusters = adjusted_clusters
-                    else:
-                        print(f"Selected original clustering: {len(original_clusters)} clusters")
-                        clusters = original_clusters
-                elif len(original_clusters) > 0:
-                    clusters = original_clusters
-                else:
-                    clusters = adjusted_clusters
-            else:
-                clusters = clustering.cluster_facial_encodings(
-                    facial_encodings, threshold=args.cluster_threshold
-                )
-            
-            # Step 4: Post-processing
-            print("\nStep 4: Post-processing clusters...")
-            
-            processed_clusters, merge_actions = cluster_post_processing.post_process_clusters(
-                clusters, facial_encodings,
-                min_large_cluster_size=50,
-                small_cluster_percentage=0.08,
-                merge_threshold=0.4,
-                max_merges_per_cluster=15,
-                safety_checks=True
-            )
-            
-            clusters = processed_clusters
-            
-            print(f"[OK] Post-processing completed:")
-            print(f"   Merge actions: {len(merge_actions)}")
-            for action in merge_actions:
-                source_cluster = action.get('cluster_j', 'unknown')
-                target_cluster = action.get('cluster_i', 'unknown')
-                faces_added = action.get('faces_added', 'unknown')
-                
-                score = action.get('confidence', action.get('similarity', 0))
-                action_type = action.get('type', 'merge')
-                
-                print(f"   {action_type}: Cluster {source_cluster} -> Cluster {target_cluster} "
-                      f"(+{faces_added} faces, score: {score:.3f})")
-
-            # Step 5: Save clustering results
-            print(f"\nSaving {len(clusters)} clusters...")
-            for idx, cluster in enumerate(clusters):
-                cluster_dir = os.path.join(dirs['clusters'], f"cluster_{idx}")
-                if not os.path.exists(cluster_dir):
-                    os.makedirs(cluster_dir)
-                for face_path in cluster:
-                    face_name = os.path.basename(face_path)
-                    dst_path = os.path.join(cluster_dir, face_name)
-                    shutil.copy2(face_path, dst_path)
-
-            # Step 6: Calculate cluster centers
-            print("\nStep 6: Calculating cluster centers...")
-            if args.method in ['adjusted', 'hybrid']:
-                cluster_centers = clustering.find_cluster_centers_adjusted(
-                    clusters, facial_encodings, method='min_distance'
-                )
-            else:
-                cluster_centers = clustering.find_cluster_centers_adjusted(
-                    clusters, facial_encodings
-                )
-            
-            # Save centers data
-            centers_data = {
-                'clusters': clusters,
-                'facial_encodings': facial_encodings,
-                'cluster_centers': cluster_centers
-            }
-            
-            centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
-            with open(centers_data_path, 'wb') as f:
-                pickle.dump(centers_data, f)
-            
-            print(f"[OK] Cluster centers saved to: {centers_data_path}")
-            
-            # Visualization
-            if args.visualize:
-                print("\nStep 7: Creating visualizations...")
-                visualization.visualize_clusters(
-                    clusters, facial_encodings, cluster_centers, 
-                    dirs['visualization']
-                )
+    # Step 6: Calculate cluster centers
+    print("\nStep 6: Calculating cluster centers...")
+    if args.method in ['adjusted', 'hybrid']:
+        cluster_centers = clustering.find_cluster_centers_adjusted(
+            clusters, facial_encodings, method='smart_center'
+        )
+    else:
+        cluster_centers = clustering.find_cluster_centers_adjusted(
+            clusters, facial_encodings, method='smart_center'
+        )
+    
+    # Save centers data
+    centers_data = {
+        'clusters': clusters,
+        'facial_encodings': facial_encodings,
+        'cluster_centers': cluster_centers
+    }
+    
+    centers_data_path = os.path.join(dirs['centers'], 'centers_data.pkl')
+    with open(centers_data_path, 'wb') as f:
+        pickle.dump(centers_data, f)
+    
+    print(f"[OK] Cluster centers saved to: {centers_data_path}")
+    
+    # Visualization
+    if args.visualize:
+        print("\nStep 7: Creating visualizations...")
+        visualization.visualize_clusters(
+            clusters, facial_encodings, cluster_centers, 
+            dirs['visualization']
+        )
     
     # ========================================================================
     # PHASE 2: FACE RETRIEVAL (Optional)
@@ -374,7 +364,7 @@ def main():
                 video_path=args.input_video,
                 centers_data_path=centers_data_path,
                 output_dir=args.output_dir,
-                model_dir=args.model_dir,
+                model_dir=None, # Updated: No model_dir needed for InsightFace
                 frame_interval=15,
                 batch_size=args.batch_size,
                 n_trees=15,
@@ -464,12 +454,13 @@ def main():
         output_video = os.path.join(args.output_dir, 'speaker_subtitle_annotated_video.mp4')
         
         try:
+            # Call updated annotation function (removed model_dir)
             speaker_subtitle_annotation.annotate_video_with_speaker_subtitles(
                 input_video=args.input_video,
                 output_video=output_video,
                 centers_data_path=centers_data_path,
                 subtitle_path=args.srt,
-                model_dir=args.model_dir,
+                # model_dir is no longer needed
                 detection_interval=args.detection_interval,
                 similarity_threshold=args.similarity_threshold,
                 speaking_threshold=args.speaking_threshold,
@@ -498,7 +489,7 @@ def main():
                 input_video=args.input_video,
                 output_video=output_video,
                 centers_data_path=centers_data_path,
-                model_dir=args.model_dir,
+                model_dir=None, # Removed arg
                 detection_interval=args.detection_interval,
                 similarity_threshold=args.similarity_threshold,
                 temporal_weight=args.temporal_weight
