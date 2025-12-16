@@ -1,66 +1,78 @@
 # -*- coding: utf-8 -*-
 
 import os
-import tensorflow as tf
+import cv2
 import numpy as np
-import facenet.src.facenet as facenet
 from tqdm import tqdm
+import insightface
+from insightface.app import FaceAnalysis
 
 def load_model(sess, model_dir):
     """
-    Loading the FaceNet model
-
-    Args:
-    sess: TensorFlow session
-    model_dir: model directory
+    Loading the InsightFace model (ArcFace)
     """
-    meta_file, ckpt_file = facenet.get_model_filenames(model_dir)
-    print(f'Metagraph file: {meta_file}')
-    print(f'Checkpoint file: {ckpt_file}')
+    print(f'Loading InsightFace model (ArcFace)...')
     
-    saver = tf.train.import_meta_graph(os.path.join(model_dir, meta_file))
-    saver.restore(sess, os.path.join(model_dir, ckpt_file))
-    print("Model loaded successfully")
+    # 初始化 FaceAnalysis，同時載入 detection 和 recognition 以避免報錯
+    # providers 列表讓它優先嘗試 GPU，沒有的話會用 CPU
+    app = FaceAnalysis(
+        name='buffalo_l', 
+        allowed_modules=['detection', 'recognition'], 
+        providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+    )
+    
+    # === 關鍵的自動降級機制 ===
+    try:
+        # 嘗試使用 GPU (ctx_id=0)
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        print("✅ InsightFace initialized on GPU")
+    except Exception as e:
+        # 如果失敗（例如 CUDA 版本不符），自動切換回 CPU (ctx_id=-1)
+        print(f"⚠️  GPU initialization failed, falling back to CPU. Error: {e}")
+        app.prepare(ctx_id=-1, det_size=(640, 640))
+        print("✅ InsightFace initialized on CPU")
+    
+    print("InsightFace model loaded successfully")
+    return app
 
 def compute_facial_encodings(sess, images_placeholder, embeddings, phase_train_placeholder, 
                              image_size, embedding_size, nrof_images, nrof_batches, 
-                             emb_array, batch_size, paths):
+                             emb_array, batch_size, paths, model_handler=None):
     """
-        Calculate facial feature encoding
-
-        Args:
-            sess: TensorFlow session
-            images_placeholder: image input placeholder
-            embeddings: embedding vector output
-            phase_train_placeholder: training phase placeholder
-            image_size: image size
-            embedding_size: embedding vector size
-            nrof_images: number of images
-            nrof_batches: number of batches
-            emb_array: embedding vector array
-            batch_size: batch size
-            paths: list of image paths
-
-        Returns:
-            Facial feature encoding dictionary
+    Calculate facial feature encoding using InsightFace
     """
-    print("Calculating facial feature encoding...")
-    for i in tqdm(range(nrof_batches)):
-        start_index = i * batch_size
-        end_index = min((i+1) * batch_size, nrof_images)
-        paths_batch = paths[start_index:end_index]
-        
-        # Loading image data
-        images = facenet.load_data(paths_batch, False, False, image_size)
-        feed_dict = {images_placeholder: images, phase_train_placeholder: False}
-        
-        # Calculate the embedding vector
-        emb_array[start_index:end_index, :] = sess.run(embeddings, feed_dict=feed_dict)
+    print("Calculating facial feature encoding with InsightFace...")
     
-    # Create a mapping of paths to embedding vectors
+    # 取得識別模型
+    rec_model = model_handler.models['recognition']
+    
     facial_encodings = {}
-    for x in range(nrof_images):
-        facial_encodings[paths[x]] = emb_array[x, :]
     
+    for i in tqdm(range(nrof_images)):
+        path = paths[i]
+        
+        try:
+            img = cv2.imread(path)
+            if img is None:
+                continue
+                
+            # InsightFace 識別模型標準輸入是 112x112
+            input_face = cv2.resize(img, (112, 112))
+            
+            # 提取特徵 (512維)
+            embedding = rec_model.get_feat(input_face)
+            embedding = embedding.flatten()
+
+            norm = np.linalg.norm(embedding)
+            if norm > 0:
+                embedding = embedding / norm
+            
+            emb_array[i, :] = embedding
+            facial_encodings[path] = embedding
+            
+        except Exception as e:
+            print(f"Error processing {path}: {e}")
+            continue
+            
     print("Facial feature coding calculation completed")
     return facial_encodings

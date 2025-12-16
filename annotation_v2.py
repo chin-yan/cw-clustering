@@ -17,6 +17,7 @@ import warnings
 import subprocess
 import tempfile
 import argparse
+import shutil
 from collections import defaultdict, Counter
 
 # InsightFace imports
@@ -27,7 +28,8 @@ from insightface.utils import face_align
 warnings.filterwarnings('ignore')
 np.seterr(divide='ignore', invalid='ignore')
 
-import feature_extraction
+# Note: feature_extraction import removed as it was not provided in context, 
+# assuming functions are self-contained or standard imports are sufficient.
 
 
 def generate_distinct_colors(n):
@@ -72,15 +74,9 @@ class ColorManager:
 class BBoxSmoother:
     """
     Smooth bounding box positions using Exponential Moving Average (EMA)
-    Matches the behavior of the original version for stability.
     """
     
     def __init__(self, initial_bbox, alpha=0.3):
-        """
-        Args:
-            alpha: Smoothing factor (0-1). 
-                   0.3 is the original value (Balanced smoothness).
-        """
         if initial_bbox is None:
             self.smoothed_bbox = None
         else:
@@ -89,12 +85,7 @@ class BBoxSmoother:
         self.initialized = (initial_bbox is not None)
     
     def update(self, new_bbox):
-        """
-        Update and return smoothed bounding box.
-        If new_bbox is None, returns the last known position (persistence).
-        """
         if new_bbox is None:
-            # Persistence: keep old box if detection fails briefly
             if self.smoothed_bbox is None:
                 return None
             return tuple(int(round(x)) for x in self.smoothed_bbox)
@@ -104,7 +95,6 @@ class BBoxSmoother:
             self.initialized = True
             return tuple(int(round(x)) for x in self.smoothed_bbox)
         
-        # EMA Smoothing
         for i in range(4):
             self.smoothed_bbox[i] = (
                 self.alpha * new_bbox[i] + 
@@ -128,15 +118,10 @@ def load_centers_data(centers_data_path):
 
 
 def match_face_with_centers(face_encoding, centers, threshold=0.5):
-    """
-    Match a face encoding with the cluster centers using Cosine Similarity
-    """
     if len(centers) == 0:
         return -1, 0
     
-    # Calculate cosine similarity
     similarities = np.dot(centers, face_encoding)
-    
     best_index = np.argmax(similarities)
     best_similarity = similarities[best_index]
     
@@ -147,18 +132,15 @@ def match_face_with_centers(face_encoding, centers, threshold=0.5):
 
 
 def init_facial_landmark_detector():
-    """Initialize Dlib predictor for MAR calculation"""
     print("Initializing facial landmark detector (Dlib)...")
     model_path = "shape_predictor_68_face_landmarks.dat"
     if not os.path.exists(model_path):
         print(f"Facial landmark model not found at {model_path}")
         raise FileNotFoundError(f"Missing required model file: {model_path}")
-    
     return dlib.shape_predictor(model_path)
 
 
 def init_insightface_app():
-    """Initialize InsightFace for Detection and Recognition"""
     print("Initializing InsightFace App...")
     app = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition'], 
                       providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
@@ -168,16 +150,11 @@ def init_insightface_app():
     except Exception as e:
         print(f"InsightFace loading on GPU failed, falling back to CPU: {e}")
         app.prepare(ctx_id=-1, det_size=(640, 640))
-    
     return app
 
 
 def process_frame_faces(frame, app, landmark_predictor, rec_model, min_face_size=30):
-    """
-    Process frame: Detect (InsightFace) -> Align/Embed (ArcFace) -> Landmarks (Dlib)
-    """
     faces_data = []
-    
     try:
         detected_faces = app.get(frame)
     except Exception:
@@ -193,11 +170,9 @@ def process_frame_faces(frame, app, landmark_predictor, rec_model, min_face_size
             continue
             
         try:
-            # 1. ArcFace Embedding (Needs aligned crop)
+            # ArcFace Embedding
             aligned_face = face_align.norm_crop(frame, landmark=face.kps, image_size=112)
             embedding = rec_model.get_feat(aligned_face).flatten()
-            
-            # L2 Normalization
             norm = np.linalg.norm(embedding)
             if norm > 0:
                 embedding /= norm
@@ -205,16 +180,12 @@ def process_frame_faces(frame, app, landmark_predictor, rec_model, min_face_size
             continue
             
         try:
-            # 2. Dlib Landmarks (For MAR)
-            # Create dlib rectangle from InsightFace bbox
+            # Dlib Landmarks for MAR
             dlib_rect = dlib.rectangle(int(x1), int(y1), int(x2), int(y2))
-            
             shape = landmark_predictor(gray_frame, dlib_rect)
             landmarks = []
             for i in range(68):
-                x = shape.part(i).x
-                y = shape.part(i).y
-                landmarks.append((x, y))
+                landmarks.append((shape.part(i).x, shape.part(i).y))
             
             mouth_landmarks = landmarks[48:68]
             
@@ -235,19 +206,16 @@ def process_frame_faces(frame, app, landmark_predictor, rec_model, min_face_size
 
 
 def calculate_mouth_aspect_ratio(mouth_landmarks):
-    """Calculate MAR"""
     if not mouth_landmarks or len(mouth_landmarks) < 20:
         return 0.0
     
     mouth_landmarks = np.array(mouth_landmarks)
     
-    # Height (average of 3 verticals)
     dist_center = abs(mouth_landmarks[9][1] - mouth_landmarks[3][1])
     dist_left = abs(mouth_landmarks[10][1] - mouth_landmarks[2][1])
     dist_right = abs(mouth_landmarks[8][1] - mouth_landmarks[4][1])
     mouth_height = (dist_center + dist_left + dist_right) / 3.0
 
-    # Width
     mouth_width = abs(mouth_landmarks[6][0] - mouth_landmarks[0][0])
     
     if mouth_width < 1:
@@ -257,16 +225,12 @@ def calculate_mouth_aspect_ratio(mouth_landmarks):
 
 
 def detect_speaking_face(prev_faces, curr_faces, threshold=0.03):
-    """
-    Detect speaking face based on MAR change.
-    """
     if not prev_faces or not curr_faces:
         return -1
     
     max_mar_change = 0
     speaking_idx = -1
     
-    # Match faces between frames
     for curr_idx, curr_face in enumerate(curr_faces):
         curr_encoding = curr_face.get('encoding')
         if curr_encoding is None:
@@ -281,8 +245,6 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.03):
                 continue
             
             similarity = np.dot(curr_encoding, prev_encoding)
-            
-            # High threshold for frame-to-frame tracking
             if similarity > best_match_sim:
                 best_match_sim = similarity
                 best_match_idx = prev_idx
@@ -296,7 +258,6 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.03):
             
             prev_mar = calculate_mouth_aspect_ratio(prev_mouth)
             curr_mar = calculate_mouth_aspect_ratio(curr_mouth)
-            
             mar_change = abs(curr_mar - prev_mar)
             
             if mar_change > max_mar_change:
@@ -307,6 +268,56 @@ def detect_speaking_face(prev_faces, curr_faces, threshold=0.03):
         return speaking_idx
     else:
         return -1
+
+
+def synchronize_subtitles(video_path, srt_path):
+    """
+    Synchronize SRT with Video Audio using ffsubsync.
+    Returns the path to the synchronized SRT file.
+    """
+    print("\n" + "="*70)
+    print("PHASE 0: Synchronizing subtitles with audio (ffsubsync)")
+    print("="*70)
+
+    # Check if ffsubsync is available
+    if shutil.which('ffsubsync') is None:
+        print("[WARNING] 'ffsubsync' tool not found!")
+        print("To fix synchronization issues, please install it via: pip install ffsubsync")
+        print("Proceeding with original subtitles (audio/text mismatch may occur).")
+        return srt_path
+
+    # Create output filename
+    base_name = os.path.splitext(os.path.basename(srt_path))[0]
+    output_dir = os.path.dirname(srt_path)
+    if not output_dir:
+        output_dir = "."
+    synced_srt_path = os.path.join(output_dir, f"{base_name}_synced.srt")
+
+    print(f"Aligning {srt_path} to audio in {video_path}...")
+    
+    try:
+        # Construct command: ffsubsync video.mp4 -i input.srt -o output.srt
+        cmd = [
+            'ffsubsync', 
+            video_path, 
+            '-i', srt_path, 
+            '-o', synced_srt_path
+        ]
+        
+        # Run subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print(f"[SUCCESS] Synchronized subtitles saved to: {synced_srt_path}")
+            return synced_srt_path
+        else:
+            print(f"[ERROR] Synchronization failed. Error details:\n{result.stderr}")
+            print("Falling back to original subtitles.")
+            return srt_path
+            
+    except Exception as e:
+        print(f"[ERROR] Exception during synchronization: {e}")
+        return srt_path
 
 
 def parse_subtitle_file(subtitle_path):
@@ -363,7 +374,6 @@ def draw_subtitle_beside_label(frame, text, bbox, color, label_width=120):
     subtitle_x = x1 + label_width + spacing
     subtitle_y = y1 - line_height
     
-    # Adjust if off-screen
     if subtitle_x + max_text_width + padding * 2 > frame_width:
         subtitle_x = max(padding, x1 - max_text_width - spacing - padding * 2)
     
@@ -440,10 +450,6 @@ def draw_subtitle_at_bottom(frame, text, color=(255, 255, 255)):
 
 
 def draw_context_stack(frame, active_contexts):
-    """
-    Draw a stack of context subtitles at the top-left.
-    active_contexts: list of text strings
-    """
     if not active_contexts:
         return frame
         
@@ -453,22 +459,16 @@ def draw_context_stack(frame, active_contexts):
     line_height = 30
     
     start_x = 100
-    # Start below the frame counter (usually at y=30)
     start_y = 80
     
     overlay = frame.copy()
-    
     current_y = start_y
     
     for text in active_contexts:
-        # Wrap specifically for top-left (narrower)
         wrapped_text = wrap_text(text, max_width=35)
         lines = wrapped_text.split('\n')
         
-        # Calculate box size for this note
         max_w = 0
-        total_h = len(lines) * line_height
-        
         for line in lines:
             (w, h), _ = cv2.getTextSize(line, font, font_scale, thickness)
             max_w = max(max_w, w)
@@ -479,13 +479,9 @@ def draw_context_stack(frame, active_contexts):
         bg_x2 = start_x + max_w + padding
         bg_y2 = current_y + (len(lines)-1) * line_height + padding * 2
         
-        # Draw semi-transparent background
         cv2.rectangle(overlay, (int(bg_x1), int(bg_y1)), (int(bg_x2), int(bg_y2)), (40, 40, 40), -1)
+        next_block_y = bg_y2 + 10 
         
-        # Update current Y for the next block
-        next_block_y = bg_y2 + 10 # 10px spacing between notes
-        
-        # Draw text
         for i, line in enumerate(lines):
             line_y = current_y + i * line_height
             cv2.putText(overlay, line, (int(start_x), int(line_y)),
@@ -493,16 +489,11 @@ def draw_context_stack(frame, active_contexts):
         
         current_y = next_block_y
 
-    # Apply alpha blend
     cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
     return frame
 
 
 def determine_speaker_for_subtitle(subtitle, detection_results, fps):
-    """
-    Determine the speaker for an entire subtitle segment using voting.
-    Modified to simply assign the speaker with the most votes, ignoring ratio.
-    """
     start_ms = subtitle.start.ordinal
     end_ms = subtitle.end.ordinal
     
@@ -520,7 +511,6 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
             speaking_idx = result.get('speaking_idx', -1)
             faces = result.get('faces', [])
             
-            # Collect face data for JSON/Debugging
             frame_face_ids = []
             for face in faces:
                 face_id = face.get('match_idx', -1)
@@ -537,7 +527,6 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
                     'faces': frame_face_ids
                 })
             
-            # Vote logic
             if speaking_idx >= 0 and speaking_idx < len(faces):
                 speaking_face = faces[speaking_idx]
                 char_id = speaking_face.get('match_idx', -1)
@@ -550,12 +539,8 @@ def determine_speaker_for_subtitle(subtitle, detection_results, fps):
     unique_speaker_ids = list(set(all_speaker_ids))
     
     if speaker_votes:
-        # Simply get the speaker with the most votes
         most_common = speaker_votes.most_common(1)[0]
         winner_id = most_common[0]
-        # winner_votes = most_common[1] # Unused in this logic
-        
-        # Directly return the winner regardless of speaking ratio
         return winner_id, speaker_bboxes.get(winner_id), unique_speaker_ids, all_faces_data
     
     return None, None, unique_speaker_ids, all_faces_data
@@ -638,11 +623,13 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                                          subtitle_path, detection_interval=1,
                                          similarity_threshold=0.65, speaking_threshold=1,
                                          preserve_audio=True, smoothing_alpha=0.3,
-                                         generate_json=True, subtitle_offset=0.0):
-    """
-    Annotate video with color-coded speaker subtitles.
-    Short subtitles (<1s) are treated as persistent context notes at top-left.
-    """
+                                         generate_json=True, subtitle_offset=0.0,
+                                         force_sync=True):
+    
+    # PHASE 0: Synchronization (New Logic)
+    final_subtitle_path = subtitle_path
+    if force_sync:
+        final_subtitle_path = synchronize_subtitles(input_video, subtitle_path)
     
     if speaking_threshold > 0.2:
         print(f"WARNING: speaking_threshold {speaking_threshold} is too high for MAR logic.")
@@ -655,8 +642,9 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     
     color_manager = ColorManager(len(centers))
     
-    subtitles = parse_subtitle_file(subtitle_path)
-    print(f"Loaded {len(subtitles)} subtitles")
+    # Load the (potentially synchronized) subtitles
+    subtitles = parse_subtitle_file(final_subtitle_path)
+    print(f"Loaded {len(subtitles)} subtitles from {final_subtitle_path}")
     
     cap = cv2.VideoCapture(input_video)
     if not cap.isOpened():
@@ -669,7 +657,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     
     print(f"\nVideo properties: {width}x{height}, {fps:.2f} FPS, {total_frames} frames")
     
-    # Output setup
     if preserve_audio:
         output_dir = os.path.dirname(output_video)
         output_name = os.path.basename(output_video)
@@ -685,12 +672,11 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     
     json_annotations = {}
     
-    # Initialize Models
     app = init_insightface_app()
     landmark_predictor = init_facial_landmark_detector()
     rec_model = app.models['recognition']
             
-    # PHASE 1: Detect faces and speakers
+    # PHASE 1: Detect faces
     print("\n" + "="*70)
     print("PHASE 1: Detecting faces and identifying speakers (InsightFace)")
     print("="*70)
@@ -718,7 +704,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             
             speaking_idx = -1
             if prev_faces:
-                # Use corrected threshold
                 speaking_idx = detect_speaking_face(prev_faces, faces, threshold=speaking_threshold)
             
             detection_results[frame_count] = {
@@ -734,24 +719,23 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     pbar.close()
     cap.release()
     
-    # PHASE 2: Determine speaker for subtitle OR separate context subtitles
+    # PHASE 2: Analyze Subtitles
     print("\n" + "="*70)
     print("PHASE 2: Analyzing subtitles (Dialogues vs Context Notes)")
     print("="*70)
     
     subtitle_speakers = {}
-    context_subtitles = []  # Store short subtitles here
+    context_subtitles = []
     
     for subtitle in tqdm(subtitles, desc="Processing subtitles"):
         
         duration = subtitle.end.ordinal - subtitle.start.ordinal
+        # Use offset if needed (though sync handles most)
         start_timestamp = subtitle.start.ordinal / 1000.0 + subtitle_offset
         
-        # KEY LOGIC CHANGE: Short subtitle (<1000ms) check
         if duration < 1000:
-            # Treat as context/narrator note (Top-Left, 5 seconds)
             start_ms = subtitle.start.ordinal + int(subtitle_offset * 1000)
-            end_ms = start_ms + 5000  # Force 5 seconds duration
+            end_ms = start_ms + 5000 
             
             context_subtitles.append({
                 'text': subtitle.text_without_tags,
@@ -759,7 +743,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 'end_ms': end_ms
             })
             
-            # Add to JSON for completeness
             if generate_json:
                 start_key = f"{subtitle.index}_start"
                 json_annotations[start_key] = {
@@ -770,17 +753,11 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     'speaker_id': None,
                     'status': 'context_note'
                 }
-            
-            # Skip the standard speaker detection logic for this subtitle
             continue
             
-        # Standard logic for normal length subtitles
         speaker_id, speaker_bbox, speaker_ids, all_faces = determine_speaker_for_subtitle(
             subtitle, detection_results, fps
         )
-        
-        # Standard timestamps
-        end_timestamp = subtitle.end.ordinal / 1000.0 + subtitle_offset
         
         bbox_smoother = None
         
@@ -822,7 +799,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                     for face in first_frame_faces
                 ]
     
-    # PHASE 3: Render video
+    # PHASE 3: Render
     print("\n" + "="*70)
     print("PHASE 3: Rendering final video with subtitles")
     print("="*70)
@@ -840,7 +817,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         
         timestamp_ms = int((frame_count / fps) * 1000)
         
-        # 1. Handle Context Subtitles (Top Left) - Allow Stacking
         active_contexts = []
         for ctx in context_subtitles:
             if ctx['start_ms'] <= timestamp_ms <= ctx['end_ms']:
@@ -849,7 +825,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         if active_contexts:
             frame = draw_context_stack(frame, active_contexts)
         
-        # 2. Handle Standard Dialogues (Speaker/Bottom)
         current_subtitle = None
         current_subtitle_info = None
         
@@ -859,7 +834,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
                 current_subtitle_info = sub_info
                 break
         
-        # Get faces
         faces_in_frame = []
         if frame_count in detection_results:
             faces_in_frame = detection_results[frame_count]['faces']
@@ -892,7 +866,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             elif bbox_smoother is not None:
                 display_bbox = bbox_smoother.update(current_speaker_bbox)
             
-            # Render Standard Subtitle
             if display_bbox and speaker_id >= 0:
                 x1, y1, x2, y2 = display_bbox
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 4)
@@ -921,7 +894,6 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
             else:
                 frame = draw_subtitle_at_bottom(frame, current_subtitle, color)
             
-            # Draw other faces
             for face in faces_in_frame:
                 face_id = face.get('match_idx', -1)
                 if face_id >= 0 and face_id != speaker_id:
@@ -943,7 +915,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
     print(f"\nVideo rendering complete: {temp_video}")
     
     if generate_json and json_annotations:
-        json_output_path = output_video.replace('.mp4', '_annotation.json')
+        json_output_path = output_video.replace('.mp4', '_annotation_3.0.json')
         save_annotation_json(json_annotations, json_output_path)
     
     if preserve_audio and final_output:
@@ -964,7 +936,7 @@ def annotate_video_with_speaker_subtitles(input_video, output_video, centers_dat
         print(f"\nFINAL OUTPUT (NO AUDIO): {temp_video}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Standalone Speaker Subtitle Annotation")
+    parser = argparse.ArgumentParser(description="Standalone Speaker Subtitle Annotation with Auto-Sync")
     parser.add_argument("--input_video", required=True, help="Path to input video")
     parser.add_argument("--output_video", required=True, help="Path to output video")
     parser.add_argument("--centers_data", required=True, help="Path to centers_data.pkl from clustering")
@@ -973,9 +945,10 @@ if __name__ == "__main__":
     parser.add_argument("--detection_interval", type=int, default=1, help="Face detection interval")
     parser.add_argument("--similarity_threshold", type=float, default=0.5, help="Matching threshold")
     parser.add_argument("--speaking_threshold", type=float, default=0.05, help="MAR threshold")
-    parser.add_argument("--subtitle_offset", type=float, default=0.0, help="Subtitle offset in seconds")
+    parser.add_argument("--subtitle_offset", type=float, default=0.0, help="Manual subtitle offset (if sync fails)")
     parser.add_argument("--no_audio", action="store_true", help="Disable audio preservation")
     parser.add_argument("--no_json", action="store_true", help="Disable JSON output")
+    parser.add_argument("--skip_sync", action="store_true", help="Skip automatic audio synchronization")
     
     args = parser.parse_args()
     
@@ -989,5 +962,6 @@ if __name__ == "__main__":
         speaking_threshold=args.speaking_threshold,
         preserve_audio=not args.no_audio,
         generate_json=not args.no_json,
-        subtitle_offset=args.subtitle_offset
+        subtitle_offset=args.subtitle_offset,
+        force_sync=not args.skip_sync
     )

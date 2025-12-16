@@ -3,7 +3,6 @@
 import os
 import cv2
 import numpy as np
-import tensorflow as tf
 import pickle
 from annoy import AnnoyIndex
 from tqdm import tqdm
@@ -13,7 +12,6 @@ from collections import deque
 
 import face_detection
 import feature_extraction
-import enhanced_face_preprocessing
 
 def load_centers_data(centers_data_path):
     """
@@ -64,18 +62,17 @@ def build_annoy_index(centers, n_trees=15):
     
     return annoy_index
 
-def extract_frames_and_faces(video_path, output_dir, sess, interval=5):
+def extract_frames_and_faces(video_path, output_dir, interval=5):
     """
-    Extract frames from video and detect faces with smaller interval
+    Extract frames from video and detect faces with smaller interval using InsightFace
     
     Args:
         video_path: Input video path
         output_dir: Output directory
-        sess: TensorFlow session
-        interval: Frame interval (reduced for better temporal coverage)
+        interval: Frame interval
         
     Returns:
-        List of detected face paths
+        List of detected face paths and frame paths
     """
     print("Extracting frames from video with smaller interval...")
     frames_dir = os.path.join(output_dir, 'retrieval_frames')
@@ -106,44 +103,39 @@ def extract_frames_and_faces(video_path, output_dir, sess, interval=5):
     cap.release()
     print(f"Extracted {len(frames_paths)} frames")
     
-    # Use enhanced face detection for better coverage
-    print("Using enhanced MTCNN to detect faces...")
-    face_paths = enhanced_face_preprocessing.detect_faces_adjusted(
-        sess, frames_paths, faces_dir,
-        min_face_size=20, face_size=160
+    # Use InsightFace for detection
+    print("Using InsightFace (SCRFD) to detect faces...")
+    face_paths = face_detection.detect_faces_with_insightface(
+        frames_paths, faces_dir,
+        min_face_size=30, face_size=112
     )
     
     return face_paths, frames_paths
 
-def compute_face_encodings(sess, face_paths, batch_size=64):
+def compute_face_encodings(face_paths, model_handler, batch_size=64):
     """
-    Compute facial feature encodings with smaller batch size
+    Compute facial feature encodings using InsightFace
     
     Args:
-        sess: TensorFlow session
         face_paths: List of face image paths
-        batch_size: Batch size (reduced for better stability)
+        model_handler: Loaded InsightFace model handler
+        batch_size: Batch size (kept for compatibility, though InsightFace processes sequentially in current impl)
         
     Returns:
         Dictionary of facial feature encodings
     """
     print("Computing facial feature encodings...")
     
-    # Get input and output tensors
-    images_placeholder = tf.get_default_graph().get_tensor_by_name("input:0")
-    embeddings = tf.get_default_graph().get_tensor_by_name("embeddings:0")
-    phase_train_placeholder = tf.get_default_graph().get_tensor_by_name("phase_train:0")
-    embedding_size = embeddings.get_shape()[1]
-    
-    # Calculate embedding vectors
+    embedding_size = 512 # ArcFace standard
     nrof_images = len(face_paths)
-    nrof_batches = int(math.ceil(1.0*nrof_images / batch_size))
     emb_array = np.zeros((nrof_images, embedding_size))
     
+    # Use feature_extraction module updated for InsightFace
     facial_encodings = feature_extraction.compute_facial_encodings(
-        sess, images_placeholder, embeddings, phase_train_placeholder,
-        160, embedding_size, nrof_images, nrof_batches,
-        emb_array, batch_size, face_paths
+        None, None, None, None, # Legacy TF args are None
+        112, embedding_size, nrof_images, 0,
+        emb_array, batch_size, face_paths,
+        model_handler=model_handler
     )
     
     return facial_encodings
@@ -163,15 +155,8 @@ def extract_frame_info(image_path):
     
     # Expected format: retrieval_frame_XXXXXX_face_Y.jpg
     import re
-    match = re.match(r'retrieval_frame_(\d+)_face_(\d+)\.jpg', basename)
-    
-    if match:
-        frame_num = int(match.group(1))
-        face_idx = int(match.group(2))
-        return frame_num, face_idx
-    
-    # Also try matching sideface pattern
-    match = re.match(r'retrieval_frame_(\d+)_sideface_(\d+)\.jpg', basename)
+    # Updated pattern to match face_detection output
+    match = re.match(r'.*frame_(\d+)_face_(\d+)\.jpg', basename)
     
     if match:
         frame_num = int(match.group(1))
@@ -214,7 +199,8 @@ def compute_face_quality(face_path):
     # 3. Face size relative to image size (larger faces are usually better)
     height, width = gray.shape
     face_area = height * width
-    face_size_score = min(1.0, face_area / (160.0 * 160.0))
+    # Adjusted for 112x112 standard input
+    face_size_score = min(1.0, face_area / (112.0 * 112.0))
     
     # Combine metrics (adjusted weights)
     quality_score = 0.35 * sharpness + 0.35 * contrast + 0.3 * face_size_score
@@ -236,7 +222,7 @@ def search_similar_faces_with_temporal(annoy_index, facial_encodings, center_pat
         center_paths: Cluster center image paths
         frame_info_dict: Dictionary mapping paths to frame numbers
         n_results: Number of results to return per query
-        similarity_threshold: Minimum similarity threshold (lowered for better recall)
+        similarity_threshold: Minimum similarity threshold
         temporal_weight: Weight for temporal consistency
         
     Returns:
@@ -372,7 +358,7 @@ def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max
             continue
             
         center_path = center_paths[idx]
-        center_name = os.path.basename(center_path)
+        # center_name = os.path.basename(center_path) # Unused
         
         # Limit result count
         display_results = retrieval_results[idx][:max_results]
@@ -385,7 +371,7 @@ def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max
         n_cols = 4  # Fixed number of columns for better layout
         n_rows = (n_results + n_cols - 1) // n_cols + 1  # +1 for center image row
         
-        fig = plt.figure(figsize=(15, 3 * n_rows))
+        plt.figure(figsize=(15, 3 * n_rows))
         
         # Display center image in its own row
         ax_center = plt.subplot2grid((n_rows, n_cols), (0, 1), colspan=2)
@@ -438,7 +424,7 @@ def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max
         
         # Configuration for each page
         centers_per_page = 16  # Maximum centers per page (4x4 grid)
-        max_cols = 4  # Maximum columns per page
+        # max_cols = 4  # Maximum columns per page # Unused variable
         
         # Calculate number of pages needed
         total_pages = (len(active_centers) + centers_per_page - 1) // centers_per_page
@@ -537,21 +523,15 @@ def visualize_retrieval_results(retrieval_results, center_paths, output_dir, max
             try:
                 save_path = os.path.join(vis_dir, filename)
                 plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
-                print(f"✅ Saved: {filename}")
+                print(f"Saved: {filename}")
             except Exception as e:
-                print(f"⚠️ Failed to save {filename} with DPI 200: {e}")
+                print(f"Failed to save {filename} with DPI 200: {e}")
                 print("Trying with lower DPI...")
                 try:
                     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
-                    print(f"✅ Saved: {filename} (DPI 150)")
+                    print(f"Saved: {filename} (DPI 150)")
                 except Exception as e2:
-                    print(f"⚠️ Failed to save {filename} with DPI 150: {e2}")
-                    print("Trying with DPI 100...")
-                    try:
-                        plt.savefig(save_path, dpi=100, bbox_inches='tight', facecolor='white')
-                        print(f"✅ Saved: {filename} (DPI 100)")
-                    except Exception as e3:
-                        print(f"❌ Failed to save {filename} even with DPI 100: {e3}")
+                    print(f"Failed to save {filename} with DPI 150: {e2}")
             
             plt.close()
         
@@ -592,17 +572,14 @@ Centers per page: up to {centers_per_page}
             with open(index_path, 'w', encoding='utf-8') as f:
                 f.write(index_content)
             
-            print(f"✅ Summary index saved: {index_path}")
+            print(f"Summary index saved: {index_path}")
     
-    print(f"✅ Visualization completed. Results saved in: {vis_dir}")
+    print(f"Visualization completed. Results saved in: {vis_dir}")
     
     # Print final summary
     if active_centers:
         total_matches = sum(len(retrieval_results[idx]) for idx in active_centers)
-        print(f"📊 Summary: {len(active_centers)} active centers, {total_matches} total matches")
-        if len(active_centers) > 16:
-            pages_created = (len(active_centers) + 15) // 16
-            print(f"📄 Created {pages_created} summary pages to display all centers")
+        print(f"Summary: {len(active_centers)} active centers, {total_matches} total matches")
 
 def visualize_frame_results(frame_results, center_paths, output_dir):
     """
@@ -673,7 +650,7 @@ def visualize_frame_results(frame_results, center_paths, output_dir):
     plt.figure(figsize=(15, 8))
     
     # Plot each center's appearances in a different color
-    colors = plt.cm.tab20(np.linspace(0, 1, len(center_matches)))
+    # colors = plt.cm.tab20(np.linspace(0, 1, len(center_matches))) # Unused
     
     for i, (center_id, matches) in enumerate(center_matches.items()):
         if len(matches) < 3:  # Skip centers with few matches
@@ -701,13 +678,13 @@ def enhanced_face_retrieval(video_path, centers_data_path, output_dir, model_dir
                          frame_interval=5, batch_size=64, n_trees=15, n_results=10,
                          similarity_threshold=0.5, temporal_weight=0.2):
     """
-    Main function for enhanced face retrieval
+    Main function for enhanced face retrieval with InsightFace
     
     Args:
         video_path: Input video path
         centers_data_path: Path to cluster center data
         output_dir: Output directory
-        model_dir: FaceNet model directory
+        model_dir: Ignored (InsightFace manages models automatically)
         frame_interval: Frame extraction interval (reduced for better coverage)
         batch_size: Feature extraction batch size (reduced for stability)
         n_trees: Number of trees for Annoy index (increased for accuracy)
@@ -721,66 +698,59 @@ def enhanced_face_retrieval(video_path, centers_data_path, output_dir, model_dir
     # Build Annoy index with more trees
     annoy_index = build_annoy_index(centers, n_trees)
     
-    with tf.Graph().as_default():
-        with tf.Session() as sess:
-            # Extract frames and detect faces from video with enhanced preprocessing
-            face_paths, frame_paths = extract_frames_and_faces(
-                video_path, output_dir, sess, frame_interval
-            )
-            
-            # Load FaceNet model
-            print("Loading FaceNet model...")
-            model_dir = os.path.expanduser(model_dir)
-            feature_extraction.load_model(sess, model_dir)
-            
-            # Compute facial feature encodings
-            facial_encodings = compute_face_encodings(sess, face_paths, batch_size)
-            
-            # Prepare frame information for temporal consistency
-            frame_info_dict = {}
-            for path in facial_encodings.keys():
-                frame_num, _ = extract_frame_info(path)
-                frame_info_dict[path] = frame_num
-            
-            # Search for similar faces with temporal consistency
-            retrieval_results, frame_results = search_similar_faces_with_temporal(
-                annoy_index, facial_encodings, center_paths, frame_info_dict,
-                n_results, similarity_threshold, temporal_weight
-            )
-            
-            # Save retrieval results
-            results_data = {
-                'by_center': retrieval_results,
-                'by_frame': frame_results
-            }
-            results_path = os.path.join(output_dir, 'retrieval', 'enhanced_retrieval_results.pkl')
-            with open(results_path, 'wb') as f:
-                pickle.dump(results_data, f)
-            
-            # Visualize retrieval results
-            visualize_retrieval_results(retrieval_results, center_paths, output_dir, n_results)
-            visualize_frame_results(frame_results, center_paths, output_dir)
+    # No TensorFlow session needed for InsightFace
+    
+    # Extract frames and detect faces from video with enhanced preprocessing (now using InsightFace)
+    face_paths, frame_paths = extract_frames_and_faces(
+        video_path, output_dir, frame_interval
+    )
+    
+    # Load InsightFace model handler
+    print("Loading InsightFace model...")
+    model_handler = feature_extraction.load_model(None, None)
+    
+    # Compute facial feature encodings
+    facial_encodings = compute_face_encodings(face_paths, model_handler, batch_size)
+    
+    # Prepare frame information for temporal consistency
+    frame_info_dict = {}
+    for path in facial_encodings.keys():
+        frame_num, _ = extract_frame_info(path)
+        frame_info_dict[path] = frame_num
+    
+    # Search for similar faces with temporal consistency
+    retrieval_results, frame_results = search_similar_faces_with_temporal(
+        annoy_index, facial_encodings, center_paths, frame_info_dict,
+        n_results, similarity_threshold, temporal_weight
+    )
+    
+    # Save retrieval results
+    results_data = {
+        'by_center': retrieval_results,
+        'by_frame': frame_results
+    }
+    results_dir = os.path.join(output_dir, 'retrieval')
+    if not os.path.exists(results_dir):
+        os.makedirs(results_dir)
+        
+    results_path = os.path.join(results_dir, 'enhanced_retrieval_results.pkl')
+    with open(results_path, 'wb') as f:
+        pickle.dump(results_data, f)
+    
+    # Visualize retrieval results
+    visualize_retrieval_results(retrieval_results, center_paths, output_dir, n_results)
+    visualize_frame_results(frame_results, center_paths, output_dir)
     
     print("Enhanced face retrieval completed!")
     return retrieval_results, frame_results
 
 if __name__ == "__main__":
     # Configure parameters
-    video_path = r"C:\Users\VIPLAB\Desktop\Yan\Drama_FresfOnTheBoat\FreshOnTheBoatOnYoutube\0.mp4"
-    centers_data_path = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result\centers\centers_data.pkl"
-    output_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\result"
-    model_dir = r"C:\Users\VIPLAB\Desktop\Yan\video-face-clustering\models\20180402-114759"
+    # Note: These paths are placeholders, update as needed
+    video_path = r"path/to/video.mp4"
+    centers_data_path = r"path/to/centers_data.pkl"
+    output_dir = r"path/to/output"
     
     # Execute enhanced face retrieval
-    retrieval_results, frame_results = enhanced_face_retrieval(
-        video_path=video_path,
-        centers_data_path=centers_data_path,
-        output_dir=output_dir,
-        model_dir=model_dir,
-        frame_interval=5,      # Extract frames more frequently
-        batch_size=64,         # Smaller batch size for better stability
-        n_trees=15,            # More trees for better accuracy
-        n_results=10,          # Number of results to return per query
-        similarity_threshold=0.5,  # Lower threshold for better recall
-        temporal_weight=0.2    # Weight for temporal consistency
-    )
+    # retrieval_results, frame_results = enhanced_face_retrieval(...)
+    pass
